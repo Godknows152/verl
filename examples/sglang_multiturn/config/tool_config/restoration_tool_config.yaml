@@ -1,0 +1,85 @@
+# verl 多轮 rollout 的图像恢复工具配置
+#
+# 该工具提供以下图像恢复能力：
+# - 超分辨率（real_esrgan）
+# - 去噪（scunet）
+# - 低光照增强（retinexformer_fivek、hvicidnet、lightdiff）
+# - 去雨（turbo_rain、s2former、idt）
+# - 去雾（ridcp、kanet）
+# - 去雪（turbo_snow）
+#
+# GPU 显存管理策略：
+#   为避免与 SGLang 的 memory_saver 冲突（它会导致 resume_memory_occupation 超时），
+#   这里使用带 auto_unload 的动态模型加载：
+#   - preload=False：初始化时不加载全部模型，按需加载
+#   - auto_unload=True：每次使用后卸载模型以释放 GPU 显存
+#   这样 SGLang 在需要同步权重时可以回收显存。
+#
+# 用法：
+#   actor_rollout_ref:
+#     rollout:
+#       tool_kwargs:
+#         tools_config_file: path/to/restoration_tool_config.yaml
+
+tools: # 工具定义列表
+  - class_name: "verl.tools.restoration_tool.RestorationTool" # 图像恢复工具实现类
+    config: # 工具运行参数
+      type: native # 工具运行方式（native 表示本地 Python 工具）
+      # 运行图像恢复模型的设备
+      # 使用 cuda:3 作为恢复任务的专用 GPU（SGLang 使用 GPU 0-2）
+      # 也可以配合 auto_unload=True 使用 cuda:0
+      device: cuda:3 # 恢复模型执行设备
+      # 中间输出图片目录
+      output_dir: /tmp/verl_restoration # 中间输出图片目录
+      # 为避免与 SGLang 的 GPU 显存冲突，使用动态加载模式
+      # preload=False：不在初始化时加载模型，而是按需加载
+      preload: false # 启动时不预加载全部模型，按需加载
+      # auto_unload=True：每次使用后自动卸载模型
+      # 这样可以释放 GPU 显存，便于 SGLang 恢复内存占用
+      auto_unload: true # 每次调用后自动卸载模型以释放显存
+    tool_schema: # 暴露给 VLM 的工具调用 schema
+      type: "function" # 函数调用 schema 类型
+      function: # 工具函数定义
+        name: "restore_image" # 工具函数名（模型将调用该名称）
+        description: |
+          Apply an image restoration operation to remove degradation. 
+          Available restoration actions:
+          - real_esrgan: Super-resolution, deblurring, denoising, compression artifact removal
+          - scunet: High-quality image denoising
+          - retinexformer_fivek: Low-light image enhancement
+          - hvicidnet: Low-light and exposure correction
+          - lightdiff: Low-light enhancement using diffusion model
+          - turbo_rain: Fast deraining
+          - s2former: Rain streak removal
+          - idt: Deraining and raindrop removal
+          - ridcp: Image dehazing
+          - kanet: Image dehazing
+          - turbo_snow: Image desnowing
+          - stop: Stop the restoration process (use when image is sufficiently restored)
+          
+          Choose the most appropriate action based on the observed degradation type.
+        parameters: # 函数参数定义
+          type: "object" # 顶层参数类型
+          properties: # 参数字段列表
+            action: # 恢复动作参数
+              type: "string" # 动作字段类型
+              description: |
+                The restoration action to apply. Must be one of:
+                real_esrgan, scunet, retinexformer_fivek, hvicidnet, lightdiff,
+                turbo_rain, s2former, idt, ridcp, kanet, turbo_snow, snowmaster, stop
+              enum: # 可选动作枚举
+                - real_esrgan
+                - scunet
+                - retinexformer_fivek
+                - hvicidnet
+                - lightdiff
+                - turbo_rain
+                - s2former
+                - idt
+                - ridcp
+                - kanet
+                - turbo_snow
+                - snowmaster
+                - stop
+          required: # 必填参数列表
+            - action # 必须提供 action

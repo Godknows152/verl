@@ -1,0 +1,129 @@
+# Image Restoration Multi-turn GRPO Training Configuration
+#
+# This configuration trains a VLM to perform iterative image restoration
+# by selecting appropriate restoration tools based on observed degradation.
+#
+# Usage:
+#   cd /home/LXJ/Python_Projects/verl/verl
+#   python3 -m verl.trainer.main_ppo \
+#     --config-path="$(pwd)/examples/sglang_multiturn/config" \
+#     --config-name='restoration_multiturn_grpo'
+
+hydra: # Hydra 全局配置
+  searchpath: # 额外配置搜索路径
+    - file://verl/trainer/config # 让本配置可继承 verl/trainer/config 下的基础配置
+
+defaults: # Hydra 默认继承顺序
+  - ppo_trainer # 继承 PPO 训练器基础配置
+  - _self_ # 最后应用当前文件中的同名参数覆盖默认值
+
+# Data configuration
+# 数据位置: /home/LXJ/Python_Projects/verl/data/restoration/
+# 支持多个parquet文件，使用列表格式
+data: # 数据加载配置
+  train_files: # 训练集 parquet 文件列表
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/all_decision_train.parquet # 雨天训练集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/fog_decision_train.parquet # 雾天训练集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/night_decision_train.parquet # 夜间训练集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/snow_decision_train.parquet # 雪天训练集
+  val_files: # 验证集 parquet 文件列表
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/all_decision_test.parquet # 雨天验证集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/fog_decision_test.parquet # 雾天验证集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/night_decision_test.parquet # 夜间验证集
+    - /home/LXJ/Python_Projects/RL4VLM/data/restoration/converted/snow_decision_test.parquet # 雪天验证集
+  train_batch_size: 32 # 每个训练 step 的样本数（增大以降低 GRPO 优势估计方差）
+  max_prompt_length: 2048 # 输入 prompt 最大 token 长度
+  max_response_length: 4096 # 输出 response 最大 token 长度
+  return_raw_chat: true # 返回原始多轮对话结构（agent loop 需要）
+  # Important: Set to False for multi-turn with tool-generated images
+  return_multi_modal_inputs: false # 多轮工具会生成新图像，故不直接回传原多模态输入
+
+# Algorithm configuration
+algorithm: # 强化学习算法配置
+  adv_estimator: grpo # 优势估计方式：GRPO
+  kl_ctrl: # KL 约束配置
+    kl_coef: 0.01 # KL 惩罚系数，约束策略偏离参考模型
+
+# Actor-Rollout-Ref configuration
+actor_rollout_ref: # actor / rollout / ref 三模块配置
+  model: # 基座模型配置
+    path: /home/LXJ/Python_Projects/ViGoRL/Qwen_Model/Qwen3-VL-8B-Instruct_for_sft # 初始策略模型路径
+    # Or use a local path
+    # path: /path/to/your/vlm/model
+  
+  actor: # 可训练策略模型配置
+    optim: # actor 优化器配置
+      lr: 1e-5 # actor 学习率
+    # Entropy bonus to encourage exploration and prevent entropy collapse
+    entropy_coeff: 0.3 # 熵奖励系数，增大以鼓励更多探索
+    # KL loss to constrain policy drift from reference model
+    use_kl_loss: true # 是否在 actor loss 中显式加入 KL 项
+    kl_loss_coef: 0.01 # actor loss 中 KL 项的系数
+    # CPU offload for actor to reduce GPU memory usage (official verl fsdp_config format)
+    fsdp_config: # FSDP 显存优化配置
+      param_offload: true # 将参数 offload 到 CPU 以节省 GPU 显存
+      optimizer_offload: true # 将优化器状态 offload 到 CPU
+    # ppo_mini_batch_size / n_gpus must be >= ppo_micro_batch_size_per_gpu
+    # With 4 GPUs: 8 / 4 = 2 >= 2 ✓
+    ppo_mini_batch_size: 8 # PPO 每次更新使用的 mini-batch 大小
+    ppo_micro_batch_size_per_gpu: 2 # 每张 GPU 的微批大小（梯度累积的最小单元）
+  
+  rollout: # 采样（rollout）配置
+    name: sglang # 使用 sglang 作为推理/采样后端
+    temperature: 1.0 # 采样温度：1.0 是 GRPO 标准设置，配合 n>1 即可产生差异化输出
+    n: 2 # 每个 prompt 采样回答数（GRPO 必须 >1 才能做组内对比）；多轮工具调用开销大，设为 2 平衡效率与多样性
+    tensor_model_parallel_size: 1 # 张量并行度（1 表示不切分）
+    # With CPU offload enabled, can use more GPU memory for rollout
+    gpu_memory_utilization: 0.45 # sglang 可使用的 GPU 显存比例
+    log_prob_micro_batch_size_per_gpu: 2 # 计算 rollout log_prob 时每卡微批大小
+
+    # Skip SGLang's tokenizer init since agent loop handles tokenization locally
+    # This avoids issues with Qwen3VL's new processor not being fully supported
+    # skip_tokenizer_init: true
+    
+    # Agent loop worker settings
+    agent: # agent loop worker 配置
+      # Set to 1 to avoid GPU OOM - each worker loads multiple restoration models (~13GB)
+      # Total GPU usage: SGLang(~34GB) + 1 Worker(~13GB) + Training(~15GB) ≈ 62GB
+      num_workers: 1 # rollout worker 数量
+      default_agent_loop: tool_agent # 使用的默认 agent loop 实现
+      # GPU allocation: Set to 0 because all GPUs are reserved by SGLang placement groups
+      # RestorationToolkit will access GPU directly via CUDA without Ray allocation
+      num_gpus_per_worker: 0 # Ray 层面分配给每个 worker 的 GPU 数（0 表示不占用 Ray GPU 资源）
+    
+    # Multi-turn rollout settings
+    multi_turn: # 多轮交互配置
+      enable: true # 是否启用多轮 rollout
+      max_user_turns: 10 # 单条轨迹允许的最大 user turn 数
+      max_assistant_turns: 10 # 单条轨迹允许的最大 assistant turn 数
+      format: answer # 工具调用解析格式（<answer>tool_name</answer>）
+      tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml # 工具定义配置路径
+      interaction_config_path: examples/sglang_multiturn/config/interaction_config/restoration_interaction_config.yaml # 交互与奖励配置路径
+  
+  ref: # 参考模型配置
+    log_prob_micro_batch_size_per_gpu: 2 # 参考模型计算 log_prob 时每卡微批大小
+    # CPU offload for reference model (official verl fsdp_config format)
+
+# Critic configuration (for PPO, not needed for pure GRPO)
+# critic:
+#   model:
+#     path: Qwen/Qwen2.5-VL-7B-Instruct
+#   optim:
+#     lr: 1e-5
+#   ppo_micro_batch_size_per_gpu: 2
+
+# Trainer configuration
+trainer: # 训练控制与日志配置
+  logger: # 日志后端列表
+    - console # 输出到终端
+    - swanlab # 输出到 SwanLab 可视化平台
+  project_name: Verl # 日志平台中的项目名
+  experiment_name: 多轮强化学习_0305 # 本次实验名称
+  # 可选：记录每轮评估时生成的文本数量
+  log_val_generations: 10 # 每次验证时记录的样本生成条数
+  n_gpus_per_node: 4 # 每个节点使用的 GPU 数
+  nnodes: 1 # 分布式训练节点数
+  save_freq: 100 # 每隔多少训练 step 保存一次 checkpoint
+  test_freq: 100 # 每隔多少训练 step 做一次验证
+  total_epochs: 10 # 训练总 epoch 数
+  val_before_train: false # 是否在训练开始前先跑一次验证

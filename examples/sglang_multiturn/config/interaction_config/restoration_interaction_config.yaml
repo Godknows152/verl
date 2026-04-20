@@ -1,0 +1,32 @@
+# Image Restoration Interaction Configuration for verl multi-turn RL training
+#
+# This interaction calculates rewards by comparing degraded and restored images
+# using IQA metrics (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE).
+#
+# Usage:
+#   actor_rollout_ref:
+#     rollout:
+#       multi_turn:
+#         interaction_config_path: path/to/restoration_interaction_config.yaml
+
+interaction: # 交互器注册配置
+  - name: "image_restoration" # 交互器名称（需与 interaction_kwargs.name 匹配）
+    class_name: "verl.interactions.image_restoration_interaction.ImageRestorationInteraction" # 交互器实现类路径
+    config: # 奖励与迭代参数
+      # Maximum number of restoration iterations
+      max_iterations: 5 # 单条轨迹最多允许的恢复迭代轮数
+      
+      # Whether to use IQA (Image Quality Assessment) metrics for scoring
+      # Uses QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE with degradation-type-specific weights
+      use_iqa: true # 是否启用 IQA 多指标综合评分
+      
+      # Device for IQA scoring (use cuda:3 to avoid conflict with SGLang and restoration models)
+      device: cuda:3 # IQA 评分所用设备
+      
+      # Scale factor for final reward
+      # Adjusts the magnitude of rewards for RL training
+      reward_scale: 1.0 # 不再额外缩放，仅靠 clamp 防止异常值
+
+      # Mixed reward coefficient:
+      # reward = alpha * (processed - prev) + (1-alpha) * (processed - identity)
+      alpha: 0.9 # 混合奖励中边际项权重，(1-alpha) 为相对初始图像项权重
