@@ -56,16 +56,20 @@ def detect_degradation_type(image_path: str) -> str:
 
 
 def create_system_prompt() -> str:
+    """Return the system prompt for image restoration training.
+
+    The hermes tool-call format (<tool_call>...</tool_call>) is injected
+    automatically by Qwen3-VL's chat template when ``tools`` is provided,
+    so we do NOT include format instructions here.
+    """
     return (
-        "You are an intelligent image restoration assistant. "
-        "A conversation between User and Assistant. "
-        "The user asks a question, and the Assistant solves it. "
-        "The assistant first thinks about the reasoning process in the mind and then "
-        "provides the user with the answer. "
-        "The reasoning process and answer are enclosed within <explanation> </explanation> "
-        "and <answer> </answer> tags, respectively, "
-        "i.e., <explanation> reasoning process here </explanation>"
-        "<answer> answer here </answer>"
+        "You are an expert image restoration assistant. "
+        "Your task is to analyze a degraded image and apply appropriate restoration operations "
+        "one step at a time using the available tools. "
+        "After each restoration step you will receive the restored image and quality feedback. "
+        "Select the most suitable restoration action for the observed degradation type, "
+        "and call the 'restore_image' tool with the chosen action. "
+        "Stop when the image quality is satisfactory."
     )
 
 
@@ -140,15 +144,9 @@ def make_map_fn(data_source: str, system_prompt: str):
                     "restore_image": {
                         "create_kwargs": {
                             "image_path": image_path,
+                            "degradation_type": degradation_type,
                         },
                     },
-                },
-                "interaction_kwargs": {
-                    # "name" selects which Interaction class to instantiate
-                    "name": "image_restoration",
-                    "original_image": image_path,
-                    "image_path": image_path,
-                    "degradation_type": degradation_type,
                 },
             },
         }
@@ -221,26 +219,158 @@ def convert_dataset(
     return dataset
 
 
+def migrate_existing_dataset(
+    data_dir: str = "data",
+    output_dir: str = "data/restoration",
+) -> None:
+    """Migrate already-converted parquet files to the new format.
+
+    Reads all parquet files from ``<data_dir>/train/`` and ``<data_dir>/test/``,
+    applies in-place format fixes, then writes merged outputs to:
+      - ``<output_dir>/train.parquet``
+      - ``<output_dir>/test.parquet``
+
+    Changes applied to each row:
+    - system prompt updated to the new format (no <explanation>/<answer> tags)
+    - ``extra_info.interaction_kwargs`` removed
+    - ``extra_info.tools_kwargs.restore_image.create_kwargs`` gains ``degradation_type``
+    """
+    import glob
+
+    new_system_prompt = create_system_prompt()
+
+    def fix_row(example):
+        # Fix system prompt
+        prompt = list(example["prompt"])
+        if prompt and isinstance(prompt[0], dict) and prompt[0].get("role") == "system":
+            prompt[0] = {"role": "system", "content": new_system_prompt}
+        example["prompt"] = prompt
+
+        # Fix extra_info
+        ei = dict(example["extra_info"])
+        ei.pop("interaction_kwargs", None)
+
+        deg_type = ei.get("degradation_type", "unknown")
+        tools_kwargs = ei.get("tools_kwargs", {})
+        restore = tools_kwargs.get("restore_image", {})
+        create_kwargs = restore.get("create_kwargs", {})
+        create_kwargs["degradation_type"] = deg_type
+        restore["create_kwargs"] = create_kwargs
+        tools_kwargs["restore_image"] = restore
+        ei["tools_kwargs"] = tools_kwargs
+
+        example["extra_info"] = ei
+        return example
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for split in ("train", "test"):
+        pattern = os.path.join(data_dir, split, "*.parquet")
+        paths = sorted(glob.glob(pattern))
+        if not paths:
+            print(f"No parquet files found in {os.path.join(data_dir, split)}, skipping.")
+            continue
+
+        print(f"\n[{split}] Found {len(paths)} file(s):")
+        for p in paths:
+            print(f"  {p}")
+
+        dfs = [pd.read_parquet(p) for p in paths]
+        df = pd.concat(dfs, ignore_index=True)
+        print(f"[{split}] Total rows: {len(df)}")
+
+        dataset = datasets.Dataset.from_pandas(df)
+        dataset = dataset.map(fix_row)
+
+        out_path = os.path.join(output_dir, f"{split}.parquet")
+        dataset.to_parquet(out_path)
+        print(f"[{split}] Saved {len(dataset)} rows -> {out_path}")
+
+        counts: dict = {}
+        for item in dataset:
+            dtype = item["extra_info"]["degradation_type"]
+            counts[dtype] = counts.get(dtype, 0) + 1
+        print(f"[{split}] Degradation type breakdown:")
+        for dtype, count in sorted(counts.items()):
+            print(f"  {dtype}: {count}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert an image restoration dataset to verl multi-turn RL format"
     )
-    parser.add_argument("--input_parquet", type=str, required=True,
-                        help="Input parquet file path")
+    subparsers = parser.add_subparsers(dest="mode", help="Operation mode")
+
+    # ---- migrate mode: patch already-converted parquets in data/train & data/test ----
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help=(
+            "Migrate existing converted parquet files in data/train/ and data/test/ "
+            "to the new format and write to data/restoration/"
+        ),
+    )
+    migrate_parser.add_argument(
+        "--data_dir", type=str, default="data",
+        help="Root directory containing train/ and test/ sub-folders (default: data)"
+    )
+    migrate_parser.add_argument(
+        "--output_dir", type=str, default="data/restoration",
+        help="Output directory (default: data/restoration)"
+    )
+
+    # ---- convert mode: convert raw parquet (has 'images' path + 'problem' columns) ----
+    convert_parser = subparsers.add_parser(
+        "convert",
+        help="Convert a raw restoration parquet (with 'images' path and 'problem' columns)"
+    )
+    convert_parser.add_argument("--input_parquet", type=str, required=True,
+                                help="Input raw parquet file path")
+    convert_parser.add_argument("--output_dir", type=str, default="data/restoration",
+                                help="Output directory (default: data/restoration)")
+    convert_parser.add_argument("--train_ratio", type=float, default=0.9,
+                                help="Training split ratio (default: 0.9; 1.0 = no split)")
+    convert_parser.add_argument("--data_source", type=str, default="restoration",
+                                help="data_source label (default: restoration)")
+
+    # ---- backward-compat: if called without sub-command, fall back to convert mode ----
+    parser.add_argument("--input_parquet", type=str, default=None,
+                        help="[legacy] Input raw parquet file path")
     parser.add_argument("--output_dir", type=str, default="data/restoration",
-                        help="Output directory (default: data/restoration)")
+                        help="[legacy] Output directory")
     parser.add_argument("--train_ratio", type=float, default=0.9,
-                        help="Training split ratio (default: 0.9; use 1.0 to skip split)")
+                        help="[legacy] Training split ratio")
     parser.add_argument("--data_source", type=str, default="restoration",
-                        help="data_source label written to each row (default: restoration)")
+                        help="[legacy] data_source label")
+
     args = parser.parse_args()
 
-    convert_dataset(
-        input_parquet=args.input_parquet,
-        output_dir=os.path.expanduser(args.output_dir),
-        train_ratio=args.train_ratio,
-        data_source=args.data_source,
-    )
+    if args.mode == "migrate":
+        migrate_existing_dataset(
+            data_dir=os.path.expanduser(args.data_dir),
+            output_dir=os.path.expanduser(args.output_dir),
+        )
+    elif args.mode == "convert":
+        convert_dataset(
+            input_parquet=args.input_parquet,
+            output_dir=os.path.expanduser(args.output_dir),
+            train_ratio=args.train_ratio,
+            data_source=args.data_source,
+        )
+    else:
+        # Legacy mode: no sub-command, but --input_parquet provided
+        if args.input_parquet:
+            convert_dataset(
+                input_parquet=args.input_parquet,
+                output_dir=os.path.expanduser(args.output_dir),
+                train_ratio=args.train_ratio,
+                data_source=args.data_source,
+            )
+        else:
+            # Default: run migrate on data/train + data/test
+            migrate_existing_dataset(
+                data_dir="data",
+                output_dir=os.path.expanduser(args.output_dir),
+            )
 
 
 if __name__ == "__main__":

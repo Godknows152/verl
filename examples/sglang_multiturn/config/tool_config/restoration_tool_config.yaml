@@ -28,6 +28,12 @@ tools:
       # Avoid GPU memory conflicts with SGLang by loading models dynamically
       preload: false
       auto_unload: true
+      # IQA reward computation settings
+      use_iqa: true
+      iqa_device: cuda:3
+      # alpha * marginal_improvement + (1-alpha) * identity_improvement
+      alpha: 0.9
+      reward_scale: 1.0
     tool_schema:
       type: "function"
       function:

@@ -23,7 +23,7 @@ defaults:
 data:
   # Update these paths after running convert_restoration_dataset.py
   train_files:
-    - data/restoration/train.parquet
+    - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
   train_batch_size: 32
@@ -49,7 +49,7 @@ algorithm:
 actor_rollout_ref:
   model:
     # Update to your actual Qwen3-VL checkpoint path
-    path: Qwen/Qwen3-VL-7B-Instruct
+    path: /home/LXJ/Python_Projects/ViGoRL/Qwen_Model/Qwen3-VL-8B-Instruct_for_sft
 
   actor:
     optim:
@@ -84,10 +84,9 @@ actor_rollout_ref:
       enable: true
       max_user_turns: 10
       max_assistant_turns: 10
-      # Parse tool calls from <answer>tool_name</answer> blocks
-      format: answer
+      # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
+      format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
-      interaction_config_path: examples/sglang_multiturn/config/interaction_config/restoration_interaction_config.yaml
 
   ref:
     log_prob_micro_batch_size_per_gpu: 2
