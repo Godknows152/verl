@@ -1,0 +1,77 @@
+# Image Restoration Tool Configuration for verl multi-turn rollout
+#
+# This file configures the RestorationTool that wraps the restoration models
+# located in restoration_tools/agent_tools/.
+#
+# GPU memory management strategy:
+#   To avoid conflicts with SGLang's memory_saver (which can cause
+#   resume_memory_occupation timeouts), dynamic model loading is used:
+#   - preload=false: models are loaded on demand instead of at startup
+#   - auto_unload=true: models are unloaded after each use to free GPU memory
+#   This allows SGLang to reclaim GPU memory when syncing weights.
+#
+# Usage:
+#   actor_rollout_ref:
+#     rollout:
+#       multi_turn:
+#         tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
+
+tools:
+  - class_name: "verl.tools.restoration_tool.RestorationTool"
+    config:
+      type: native
+      # Device for restoration model inference.
+      # Use cuda:3 to reserve GPUs 0-2 for SGLang; adjust based on your setup.
+      device: cuda:3
+      # Directory for intermediate output images
+      output_dir: /tmp/verl_restoration
+      # Avoid GPU memory conflicts with SGLang by loading models dynamically
+      preload: false
+      auto_unload: true
+    tool_schema:
+      type: "function"
+      function:
+        name: "restore_image"
+        description: |
+          Apply an image restoration operation to remove degradation.
+          Available restoration actions:
+          - real_esrgan: Super-resolution, deblurring, denoising, compression artifact removal
+          - scunet: High-quality image denoising
+          - retinexformer_fivek: Low-light image enhancement
+          - hvicidnet: Low-light and exposure correction
+          - lightdiff: Low-light enhancement using diffusion model
+          - turbo_rain: Fast deraining
+          - s2former: Rain streak removal
+          - idt: Deraining and raindrop removal
+          - ridcp: Image dehazing
+          - kanet: Image dehazing
+          - turbo_snow: Image desnowing
+          - snowmaster: Advanced desnowing
+          - stop: Stop the restoration process (use when image is sufficiently restored)
+
+          Choose the most appropriate action based on the observed degradation type.
+        parameters:
+          type: "object"
+          properties:
+            action:
+              type: "string"
+              description: |
+                The restoration action to apply. Must be one of:
+                real_esrgan, scunet, retinexformer_fivek, hvicidnet, lightdiff,
+                turbo_rain, s2former, idt, ridcp, kanet, turbo_snow, snowmaster, stop
+              enum:
+                - real_esrgan
+                - scunet
+                - retinexformer_fivek
+                - hvicidnet
+                - lightdiff
+                - turbo_rain
+                - s2former
+                - idt
+                - ridcp
+                - kanet
+                - turbo_snow
+                - snowmaster
+                - stop
+          required:
+            - action

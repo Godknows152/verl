@@ -1,0 +1,35 @@
+# Image Restoration Interaction Configuration for verl multi-turn RL training
+#
+# This interaction calculates rewards by comparing degraded and restored images
+# using IQA metrics (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE) with
+# degradation-type-specific weights.
+#
+# Usage:
+#   actor_rollout_ref:
+#     rollout:
+#       multi_turn:
+#         interaction_config_path: examples/sglang_multiturn/config/interaction_config/restoration_interaction_config.yaml
+
+interaction:
+  - name: "image_restoration"
+    class_name: "verl.interactions.image_restoration_interaction.ImageRestorationInteraction"
+    config:
+      # Maximum number of restoration iterations per trajectory
+      max_iterations: 5
+
+      # Whether to use IQA metrics (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE) for scoring.
+      # Set to false for a quick smoke-test without GPU-heavy IQA models.
+      use_iqa: true
+
+      # Device for IQA model inference.
+      # Use cuda:3 to avoid conflicts with SGLang (GPUs 0-2) and restoration models.
+      device: cuda:3
+
+      # Multiplier applied to the computed mixed reward before clamping to [-10, 10].
+      reward_scale: 1.0
+
+      # Mixed reward coefficient:
+      #   reward = alpha * dot(w, processed - prev)
+      #          + (1-alpha) * dot(w, processed - identity)
+      # alpha=0.9 emphasises marginal per-step gain; beta=0.1 anchors to original image quality.
+      alpha: 0.9
