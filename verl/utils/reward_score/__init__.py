@@ -103,6 +103,12 @@ def default_compute_score(
 
         res = search_r1_like_qa_em.compute_score(solution_str, ground_truth)
 
+    elif data_source == "restoration":
+        # Rewards are computed per-step inside RestorationTool.execute() and accumulated
+        # in extra_fields["tool_rewards"]. Sum them to get the episode-level score.
+        tool_rewards = (extra_info or {}).get("tool_rewards", [])
+        res = float(sum(tool_rewards)) if tool_rewards else 0.0
+
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
 
