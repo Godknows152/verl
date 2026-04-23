@@ -26,7 +26,7 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
-  train_batch_size: 9
+  train_batch_size: 8
   max_prompt_length: 2048
   max_response_length: 4096
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -73,16 +73,16 @@ actor_rollout_ref:
     # GRPO requires n > 1 to compute group-relative advantages
     n: 2
     tensor_model_parallel_size: 1
-    # SGLang uses GPUs 0-2 (n_gpus_per_node=3); GPU 3 is reserved for AgentLoopWorker
-    # With 80GB GPUs and 0.65 util, SGLang uses ~52GB per GPU
+    # SGLang uses all 4 GPUs (0-3); restoration/IQA models use GPU 3's remaining VRAM
+    # (AgentLoopWorker does not request a dedicated GPU from Ray)
     gpu_memory_utilization: 0.65
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
       num_workers: 1
-      # Allocate a dedicated GPU for restoration models to avoid conflict with SGLang
-      num_gpus_per_worker: 1.0
+      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 3's remaining VRAM
+      num_gpus_per_worker: 0.0
       default_agent_loop: tool_agent
 
     multi_turn:
@@ -106,9 +106,9 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
   log_val_generations: 10
-  # Use 3 GPUs for rollout (GPUs 0-2); GPU 3 is reserved for AgentLoopWorker
-  # (num_gpus_per_worker: 1.0 above allocates it from outside the placement group)
-  n_gpus_per_node: 3
+  # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models use GPU 3's remaining VRAM
+  # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
+  n_gpus_per_node: 4
   nnodes: 1
   save_freq: 100
   test_freq: 100

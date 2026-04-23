@@ -47,7 +47,6 @@ Supported restoration actions:
 import logging
 import os
 import sys
-import time
 import torch
 from pathlib import Path
 from typing import Any, Optional
@@ -98,14 +97,6 @@ _toolkit_instance = None
 _iqa_instance = None
 
 
-def _progress_print(stage: str, message: str) -> None:
-    """Print progress logs that are always visible in training logs."""
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[RestorationTool][{ts}][{stage}] {message}"
-    print(line, flush=True)
-    logger.warning(line)
-
-
 def get_toolkit(
     device: str = 'cuda',
     models: list = None,
@@ -116,7 +107,6 @@ def get_toolkit(
     global _toolkit_instance
     if _toolkit_instance is None:
         try:
-            _progress_print("TOOLKIT", f"Initializing RestorationToolkit on device={device}...")
             from restoration_tools.agent_tools import RestorationToolkit
             _toolkit_instance = RestorationToolkit(
                 models=models,
@@ -124,10 +114,6 @@ def get_toolkit(
                 load_iqa=False,
                 preload=preload,
                 auto_unload=auto_unload,
-            )
-            _progress_print(
-                "TOOLKIT",
-                f"RestorationToolkit initialized successfully on {device} (preload={preload}, auto_unload={auto_unload})",
             )
             logger.info(
                 f"RestorationToolkit initialized on {device} "
@@ -144,10 +130,8 @@ def get_iqa_scorer(device: str = 'cuda'):
     global _iqa_instance
     if _iqa_instance is None:
         try:
-            _progress_print("IQA", f"Initializing IQAScore on device={device}...")
             from iqa_reward import IQAScore
             _iqa_instance = IQAScore(device=device)
-            _progress_print("IQA", f"IQAScore initialized successfully on {device}")
             logger.info(f"IQAScore initialized on {device}")
         except Exception as e:
             logger.error(f"Failed to initialize IQAScore: {e}")
@@ -212,9 +196,7 @@ class RestorationTool(BaseTool):
         if not self.use_iqa:
             return [0.0, 0.0, 0.0, 0.0, 0.0]
         try:
-            _progress_print("IQA", f"Scoring image: {image_path}")
             scores = self.iqa.get_iqa_score(image_path)  # returns list of 5 floats
-            _progress_print("IQA", f"IQA scoring success: {image_path}")
             return list(scores)
         except Exception as e:
             logger.warning(f"IQA scoring failed for {image_path}: {e}")
@@ -374,7 +356,6 @@ class RestorationTool(BaseTool):
         output_dir = instance["output_dir"]
 
         try:
-            _progress_print("RESTORE", f"Instance={instance_id} step={instance['step'] + 1} action={action} start")
             logger.info(f"Instance {instance_id}: applying '{action}' to {current_image}")
             result = self.toolkit.process_image(
                 tools=[action],
@@ -388,11 +369,6 @@ class RestorationTool(BaseTool):
                 error_msg = "Restoration failed: no output generated"
                 logger.error(error_msg)
                 return ToolResponse(text=error_msg), -0.1, {"error": "restoration_failed"}
-
-            _progress_print(
-                "RESTORE",
-                f"Instance={instance_id} step={instance['step'] + 1} action={action} success output={output_path}",
-            )
 
             # Update instance state
             instance["processed_images"].append((action, output_path))
@@ -409,11 +385,6 @@ class RestorationTool(BaseTool):
             reward = self._calculate_reward(prev_scores, curr_scores, identity_scores, weights)
             instance["scores_history"].append(curr_scores)
             instance["rewards_history"].append(reward)
-
-            _progress_print(
-                "REWARD",
-                f"Instance={instance_id} step={instance['step']} reward={reward:.4f}",
-            )
 
             # Generate feedback text
             feedback = self._generate_feedback(
