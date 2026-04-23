@@ -1,6 +1,7 @@
 # Image restoration tools, models, weights and dependencies
 restoration_tools/
 data/
+log/
 
 **/*.pt
 **/checkpoints

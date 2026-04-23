@@ -102,6 +102,9 @@ class AgentLoopConfig(BaseConfig):
     # Fully qualified class name for custom AgentLoopManager (e.g., "mypackage.module.MyManager").
     # Security: This class will be dynamically imported via importlib. Only use trusted class paths.
     agent_loop_manager_class: Optional[str] = None
+    # Fractional GPU resource to request per AgentLoopWorker via Ray.
+    # Must be > 0 so Ray populates CUDA_VISIBLE_DEVICES. Co-locates with rollout servers.
+    num_gpus_per_worker: float = 0.0
 
 
 @dataclass

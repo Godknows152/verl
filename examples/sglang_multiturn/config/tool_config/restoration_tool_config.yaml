@@ -21,8 +21,9 @@ tools:
     config:
       type: native
       # Device for restoration model inference.
-      # Use cuda:3 to reserve GPUs 0-2 for SGLang; adjust based on your setup.
-      device: cuda:3
+      # Ray sets CUDA_VISIBLE_DEVICES=[3] for the agent worker (which holds GPU 3),
+      # so cuda:0 here maps to physical GPU 3.
+      device: cuda:0
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
       # Avoid GPU memory conflicts with SGLang by loading models dynamically
@@ -30,7 +31,7 @@ tools:
       auto_unload: true
       # IQA reward computation settings
       use_iqa: true
-      iqa_device: cuda:3
+      iqa_device: cuda:0
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       alpha: 0.9
       reward_scale: 1.0

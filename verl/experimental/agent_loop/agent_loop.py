@@ -1163,12 +1163,20 @@ class AgentLoopManager:
             teacher_load_balancer_handle = None
 
         node_ids = [node["NodeID"] for node in ray.nodes() if node["Alive"] and node["Resources"].get("CPU", 0) > 0]
+        # Explicitly request GPU resources for AgentLoopWorker so Ray sets CUDA_VISIBLE_DEVICES
+        # to a real device instead of an empty value.
+        # Keep this fractional by default to allow co-location with rollout servers.
+        agent_num_gpus = float(
+            OmegaConf.select(self.config, "actor_rollout_ref.rollout.agent.num_gpus_per_worker", default=0.0)
+            or 0.0
+        )
         for i in range(num_workers):
             # Round-robin scheduling over the all nodes
             node_id = node_ids[i % len(node_ids)]
             self.agent_loop_workers.append(
                 self.agent_loop_workers_class.options(
                     name=f"agent_loop_worker_{i}" + f"_{uuid4().hex[:8]}",
+                    num_gpus=agent_num_gpus,
                     scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                         node_id=node_id, soft=True
                     ),
