@@ -26,7 +26,7 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
-  train_batch_size: 12
+  train_batch_size: 18
   max_prompt_length: 2048
   max_response_length: 4096
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -62,8 +62,8 @@ actor_rollout_ref:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 8
-    ppo_micro_batch_size_per_gpu: 2
+    ppo_mini_batch_size: 12
+    ppo_micro_batch_size_per_gpu: 3
 
   rollout:
     name: sglang
@@ -77,8 +77,8 @@ actor_rollout_ref:
     # Default launch script uses physical GPU 1,2,3 only.
     # After CUDA_VISIBLE_DEVICES remapping, rollout uses all 3 visible GPUs and
     # restoration/IQA models share the last visible GPU's remaining VRAM.
-    gpu_memory_utilization: 0.45
-    log_prob_micro_batch_size_per_gpu: 2
+    gpu_memory_utilization: 0.55
+    log_prob_micro_batch_size_per_gpu: 4
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
@@ -96,7 +96,7 @@ actor_rollout_ref:
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
 
   ref:
-    log_prob_micro_batch_size_per_gpu: 2
+    log_prob_micro_batch_size_per_gpu: 4
 
 # ---------------------------------------------------------------------------
 # Trainer
