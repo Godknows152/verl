@@ -54,7 +54,7 @@ actor_rollout_ref:
   actor:
     optim:
       lr: 1.0e-5
-    entropy_coeff: 0.3
+    entropy_coeff: 0.2
     use_kl_loss: true
     kl_loss_coef: 0.05
     fsdp_config:
@@ -63,7 +63,7 @@ actor_rollout_ref:
       param_offload: true
       optimizer_offload: true
     ppo_mini_batch_size: 8
-    ppo_micro_batch_size_per_gpu: 2
+    ppo_micro_batch_size_per_gpu: 4
 
   rollout:
     name: sglang
@@ -113,7 +113,7 @@ trainer:
   nnodes: 1
   save_freq: 100
   test_freq: 100
-  total_epochs: 10
+  total_epochs: 5
   val_before_train: false
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
