@@ -87,6 +87,8 @@ class AgentData:
 
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
+    EARLY_STOP_PENALTY = -5.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -296,6 +298,11 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.tool_calls:
             return AgentState.PROCESSING_TOOLS
         else:
+            # Enforce tool usage per assistant turn for restoration.
+            # Any step that does not call a tool is treated as early stop and penalized.
+            if kwargs.get("data_source") == "restoration":
+                agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
+                agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
             return AgentState.TERMINATED
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
