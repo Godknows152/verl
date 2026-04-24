@@ -62,8 +62,8 @@ actor_rollout_ref:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 12
-    ppo_micro_batch_size_per_gpu: 3
+    ppo_mini_batch_size: 6
+    ppo_micro_batch_size_per_gpu: 2
 
   rollout:
     name: sglang
