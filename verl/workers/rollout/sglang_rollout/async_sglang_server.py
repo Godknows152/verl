@@ -48,7 +48,7 @@ from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
 from verl.workers.rollout.sglang_rollout.sglang_rollout import _set_envs_and_config
 from verl.workers.rollout.sglang_rollout.utils import SGLANG_LORA_NAME
-from verl.workers.rollout.utils import get_max_position_embeddings, run_uvicorn
+from verl.workers.rollout.utils import apply_multimodal_generation_token_bias, get_max_position_embeddings, run_uvicorn
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
@@ -403,6 +403,11 @@ class SGLangHttpServer:
 
         assert max_new_tokens <= max_possible_tokens, (
             f"max_new_tokens {max_new_tokens} exceeds available context space {max_possible_tokens}"
+        )
+        sampling_params = apply_multimodal_generation_token_bias(
+            sampling_params=sampling_params,
+            processor=self.model_config.processor,
+            disable_multimodal_special_token_generation=self.config.disable_multimodal_special_token_generation,
         )
         sampling_params["max_new_tokens"] = max_new_tokens
         return_logprob = sampling_params.pop("logprobs", False)
