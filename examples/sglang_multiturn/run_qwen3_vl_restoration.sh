@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Image Restoration Multi-turn GRPO Training
 # Model : Qwen3-VL-7B-Instruct
-# GPUs  : 4x GPU (GPU 0-2 → SGLang rollout, GPU 3 → restoration models + IQA)
+# GPUs  : default to physical GPU 1,2,3 only
+#         after CUDA_VISIBLE_DEVICES remapping:
+#         visible GPU 0-1 → SGLang rollout, visible GPU 2 → rollout + restoration models + IQA
 #
 # Prerequisites:
 #   1. Convert dataset first:
@@ -15,6 +17,13 @@
 #
 # Key parameters (override via env or command line, see YAML for full config):
 #   MODEL_PATH, TRAIN_FILES, VAL_FILES, ROLLOUT_GPUS, VISIBLE_GPUS, TOTAL_EPOCHS
+#
+# Defaults in this script:
+#   VISIBLE_GPUS=1,2,3
+#   ROLLOUT_GPUS=3
+#
+# To switch back to using physical GPU 0,1,2,3:
+#   VISIBLE_GPUS=0,1,2,3 ROLLOUT_GPUS=4 bash examples/sglang_multiturn/run_qwen3_vl_restoration.sh
 
 set -x
 export HYDRA_FULL_ERROR=1
@@ -45,17 +54,17 @@ LOG_DIR="/home/LXJ/Python_Projects/verl/log"
 MODEL_PATH="${QWEN3_VL_MODEL_PATH:-/home/LXJ/Python_Projects/ViGoRL/Qwen_Model/Qwen3-VL-8B-Instruct_for_sft}"
 TRAIN_FILES="${TRAIN_FILES:-$PROJECT_DIR/data/restoration/train.parquet}"
 VAL_FILES="${VAL_FILES:-$PROJECT_DIR/data/restoration/test.parquet}"
-# Optional: override rollout GPU count. If empty, use YAML value as-is.
+# Optional: override rollout GPU count.
+# Default to 3 so it matches the default visible physical GPUs 1,2,3.
 # Example: ROLLOUT_GPUS=2
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-3}"
 # Optional: constrain visible GPUs for the whole run.
-# Example: VISIBLE_GPUS=0,1,2 (then set ROLLOUT_GPUS=2 to leave one GPU for agent worker)
-VISIBLE_GPUS="${VISIBLE_GPUS:-}"
+# Default to physical GPU 1,2,3 because GPU 0 may be occupied by another user.
+# Example: VISIBLE_GPUS=0,1,2,3 ROLLOUT_GPUS=4
+VISIBLE_GPUS="${VISIBLE_GPUS:-1,2,3}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-10}"
 
-if [[ -n "$VISIBLE_GPUS" ]]; then
-    export CUDA_VISIBLE_DEVICES="$VISIBLE_GPUS"
-fi
+export CUDA_VISIBLE_DEVICES="$VISIBLE_GPUS"
 
 ROLLOUT_GPU_ARGS=()
 if [[ -n "$ROLLOUT_GPUS" ]]; then

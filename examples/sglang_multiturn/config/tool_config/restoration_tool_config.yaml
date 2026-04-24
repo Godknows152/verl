@@ -22,9 +22,9 @@ tools:
       type: native
       # Device for restoration model inference.
       # AgentLoopWorker does not request a dedicated GPU from Ray (num_gpus_per_worker=0.0),
-      # so it accesses physical GPU 3 directly via cuda:3, using its remaining VRAM
+      # so it accesses the last visible GPU directly via cuda:2 when only physical GPU 1,2,3 are exposed
       # after SGLang occupies its share (gpu_memory_utilization=0.65 on 80GB ≈ 52GB used).
-      device: cuda:3
+      device: cuda:2
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
       # Avoid GPU memory conflicts with SGLang by loading models dynamically
@@ -32,7 +32,7 @@ tools:
       auto_unload: true
       # IQA reward computation settings
       use_iqa: true
-      iqa_device: cuda:3
+      iqa_device: cuda:2
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       alpha: 0.9
       reward_scale: 1.0

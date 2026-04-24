@@ -26,7 +26,7 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
-  train_batch_size: 16
+  train_batch_size: 12
   max_prompt_length: 2048
   max_response_length: 4096
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -74,15 +74,16 @@ actor_rollout_ref:
     # GRPO requires n > 1 to compute group-relative advantages
     n: 2
     tensor_model_parallel_size: 1
-    # SGLang uses all 4 GPUs (0-3); restoration/IQA models use GPU 3's remaining VRAM
-    # (AgentLoopWorker does not request a dedicated GPU from Ray)
+    # Default launch script uses physical GPU 1,2,3 only.
+    # After CUDA_VISIBLE_DEVICES remapping, rollout uses all 3 visible GPUs and
+    # restoration/IQA models share the last visible GPU's remaining VRAM.
     gpu_memory_utilization: 0.45
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
       num_workers: 1
-      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 3's remaining VRAM
+      # No dedicated GPU requested from Ray; restoration/IQA models share the last visible GPU.
       num_gpus_per_worker: 0.0
       default_agent_loop: tool_agent
 
@@ -107,9 +108,9 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
   log_val_generations: 10
-  # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models use GPU 3's remaining VRAM
-  # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
-  n_gpus_per_node: 4
+  # Default launch script exposes physical GPU 1,2,3 only, so rollout uses 3 visible GPUs.
+  # To switch back to 4 GPUs, override CUDA_VISIBLE_DEVICES and trainer.n_gpus_per_node in the launch command.
+  n_gpus_per_node: 3
   nnodes: 1
   save_freq: 100
   test_freq: 100
