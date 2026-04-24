@@ -26,7 +26,7 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
-  train_batch_size: 8
+  train_batch_size: 16
   max_prompt_length: 2048
   max_response_length: 4096
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -70,12 +70,13 @@ actor_rollout_ref:
     # Keep rollout dtype aligned with actor precision
     dtype: bfloat16
     temperature: 1.0
+    disable_multimodal_special_token_generation: true
     # GRPO requires n > 1 to compute group-relative advantages
     n: 2
     tensor_model_parallel_size: 1
     # SGLang uses all 4 GPUs (0-3); restoration/IQA models use GPU 3's remaining VRAM
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.65
+    gpu_memory_utilization: 0.45
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:

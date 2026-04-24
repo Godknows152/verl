@@ -30,6 +30,12 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _preview_indices(indices: torch.Tensor, max_items: int = 16) -> list[int]:
+    if indices.numel() == 0:
+        return []
+    return indices[:max_items].tolist()
+
+
 def get_rope_index(
     processor,
     input_ids: torch.Tensor,
@@ -153,6 +159,20 @@ def _get_input_embeds(
         n_image_tokens = (input_ids == model.config.image_token_id).sum().item()
         n_image_features = image_embeds.shape[0]
         if n_image_tokens != n_image_features:
+            image_token_positions = torch.nonzero(input_ids == model.config.image_token_id, as_tuple=False).flatten()
+            attention_valid_tokens = int(attention_mask.sum().item()) if attention_mask is not None else None
+            logger.warning(
+                "Qwen3-VL image token/feature mismatch: tokens=%d features=%d "
+                "input_ids_shape=%s attention_valid_tokens=%s pixel_values_shape=%s image_grid_thw_shape=%s "
+                "image_token_positions_preview=%s",
+                n_image_tokens,
+                n_image_features,
+                tuple(input_ids.shape),
+                attention_valid_tokens,
+                tuple(pixel_values.shape),
+                tuple(image_grid_thw.shape) if image_grid_thw is not None else None,
+                _preview_indices(image_token_positions),
+            )
             raise ValueError(
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )

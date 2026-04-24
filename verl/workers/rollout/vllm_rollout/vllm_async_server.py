@@ -42,7 +42,12 @@ from verl.utils.tokenizer import normalize_token_ids
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
-from verl.workers.rollout.utils import get_max_position_embeddings, qwen2_5_vl_dedup_image_tokens, run_uvicorn
+from verl.workers.rollout.utils import (
+    apply_multimodal_generation_token_bias,
+    get_max_position_embeddings,
+    qwen2_5_vl_dedup_image_tokens,
+    run_uvicorn,
+)
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
     VLLM_LORA_NAME,
@@ -477,6 +482,11 @@ class vLLMHttpServer:
 
         assert max_tokens <= max_possible_tokens, (
             f"max_tokens {max_tokens} exceeds available context space {max_possible_tokens}"
+        )
+        sampling_params = apply_multimodal_generation_token_bias(
+            sampling_params=sampling_params,
+            processor=self.model_config.processor,
+            disable_multimodal_special_token_generation=self.config.disable_multimodal_special_token_generation,
         )
         sampling_params["logprobs"] = 0 if sampling_params.pop("logprobs", False) else None
         sampling_params.setdefault("repetition_penalty", self.config.get("repetition_penalty", 1.0))

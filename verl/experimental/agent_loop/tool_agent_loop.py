@@ -106,6 +106,52 @@ class ToolAgentLoop(AgentLoopBase):
         self.prompt_length = self.rollout_config.prompt_length
         self.response_length = self.rollout_config.response_length
 
+    @staticmethod
+    def _count_image_markers_in_messages(messages: list[dict[str, Any]]) -> int:
+        """Count image markers from message content for alignment diagnostics."""
+        count = 0
+        for message in messages or []:
+            content = message.get("content")
+            if isinstance(content, str):
+                count += content.count("<image>")
+            elif isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "image":
+                        count += 1
+                    elif item.get("type") == "text" and isinstance(item.get("text"), str):
+                        count += item["text"].count("<image>")
+        return count
+
+    @staticmethod
+    def _safe_len(multimodal_data: Any) -> int:
+        if multimodal_data is None:
+            return 0
+        if isinstance(multimodal_data, list):
+            return len(multimodal_data)
+        return 1
+
+    def _log_image_alignment(self, stage: str, messages: list[dict[str, Any]], images: Any, request_id: str) -> None:
+        marker_count = self._count_image_markers_in_messages(messages)
+        image_count = self._safe_len(images)
+        if marker_count != image_count:
+            logger.warning(
+                "Image marker/image count mismatch at %s: markers=%d images=%d request_id=%s",
+                stage,
+                marker_count,
+                image_count,
+                request_id,
+            )
+        else:
+            logger.info(
+                "Image marker/image alignment at %s: markers=%d images=%d request_id=%s",
+                stage,
+                marker_count,
+                image_count,
+                request_id,
+            )
+
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
@@ -182,6 +228,12 @@ class ToolAgentLoop(AgentLoopBase):
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
         schemas = getattr(agent_data, "_active_tool_schemas", self.tool_schemas)
+        self._log_image_alignment(
+            stage="pending_before_apply_chat_template",
+            messages=agent_data.messages,
+            images=agent_data.image_data,
+            request_id=agent_data.request_id,
+        )
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
             tools=schemas,
@@ -323,6 +375,12 @@ class ToolAgentLoop(AgentLoopBase):
             # to stay compatible with downstream image processing logic!
             images = new_images_this_turn if new_images_this_turn else None
             videos = None
+            self._log_image_alignment(
+                stage="processing_tools_tool_response_before_apply_chat_template",
+                messages=add_messages,
+                images=images,
+                request_id=agent_data.request_id,
+            )
             response_ids = await self.apply_chat_template(
                 add_messages,
                 images=images,
@@ -341,6 +399,13 @@ class ToolAgentLoop(AgentLoopBase):
                 agent_data.image_data = [agent_data.image_data]
             for img in new_images_this_turn:
                 agent_data.image_data.append(img)
+
+        self._log_image_alignment(
+            stage="processing_tools_after_message_and_image_append",
+            messages=agent_data.messages,
+            images=agent_data.image_data,
+            request_id=agent_data.request_id,
+        )
 
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)
@@ -364,6 +429,15 @@ class ToolAgentLoop(AgentLoopBase):
             instance_id, _ = await tool.create(create_kwargs=kwargs.get("create_kwargs", {}))
             tool_execution_response, tool_reward, res = await tool.execute(
                 instance_id, tool_args, agent_data=agent_data
+            )
+        except KeyError:
+            logger.warning(f"Error when executing tool: unknown tool '{tool_call.name}'")
+            return (
+                ToolResponse(
+                    text=f"Error when executing tool: unknown tool '{tool_call.name}'",
+                ),
+                -1.0,
+                {},
             )
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")

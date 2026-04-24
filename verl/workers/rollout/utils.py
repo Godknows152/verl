@@ -13,6 +13,7 @@
 # limitations under the License.
 import asyncio
 import logging
+from typing import Any
 
 import numpy as np
 import uvicorn
@@ -105,3 +106,49 @@ def qwen2_5_vl_dedup_image_tokens(prompt_ids: list[int], processor):
         return prompt_ids[mask].tolist()
     else:
         return prompt_ids
+
+
+def get_multimodal_special_token_ids(processor: Any) -> list[int]:
+    """Return multimodal special token ids that should not be freely generated."""
+    if processor is None:
+        return []
+
+    token_ids: list[int] = []
+    tokenizer = getattr(processor, "tokenizer", None)
+
+    for attr_name in ["image_token_id", "video_token_id", "vision_start_token_id", "vision_end_token_id"]:
+        token_id = getattr(processor, attr_name, None)
+        if isinstance(token_id, int) and token_id >= 0:
+            token_ids.append(token_id)
+
+    if tokenizer is not None:
+        for token in ["<|image_pad|>", "<|video_pad|>", "<|vision_start|>", "<|vision_end|>"]:
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            if isinstance(token_id, int) and token_id >= 0:
+                token_ids.append(token_id)
+
+    return list(dict.fromkeys(token_ids))
+
+
+def apply_multimodal_generation_token_bias(
+    sampling_params: dict[str, Any],
+    processor: Any,
+    disable_multimodal_special_token_generation: bool,
+    bias: float = -100.0,
+) -> dict[str, Any]:
+    """Merge strong negative logit bias for multimodal control tokens into sampling params."""
+    if not disable_multimodal_special_token_generation:
+        return sampling_params
+
+    blocked_token_ids = get_multimodal_special_token_ids(processor)
+    if not blocked_token_ids:
+        return sampling_params
+
+    updated_sampling_params = dict(sampling_params)
+    existing_logit_bias = updated_sampling_params.get("logit_bias") or {}
+    merged_logit_bias = dict(existing_logit_bias)
+    for token_id in blocked_token_ids:
+        merged_logit_bias[token_id] = min(float(merged_logit_bias.get(token_id, 0.0)), bias)
+
+    updated_sampling_params["logit_bias"] = merged_logit_bias
+    return updated_sampling_params
