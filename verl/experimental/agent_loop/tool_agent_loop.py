@@ -88,7 +88,7 @@ class AgentData:
 
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
-    EARLY_STOP_PENALTY = -5.0
+    EARLY_STOP_PENALTY = -15.0
     NO_TOOL_LENGTH_THRESHOLD = 256
     NO_TOOL_LENGTH_PENALTY_ALPHA = 3.0
 
