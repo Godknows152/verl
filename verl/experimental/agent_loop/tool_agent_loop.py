@@ -179,6 +179,7 @@ class ToolAgentLoop(AgentLoopBase):
         # Per-sample tool selection: filter global tools by extra_info.tool_selection
         extra_info = kwargs.get("extra_info", {}) or {}
         tool_selection = extra_info.get("tool_selection")
+        agent_data.data_source = kwargs.get("data_source", "")
         if tool_selection and self.tools:
             selected = {name: self.tools[name] for name in tool_selection if name in self.tools}
             agent_data._active_tools = selected
@@ -300,7 +301,7 @@ class ToolAgentLoop(AgentLoopBase):
         else:
             # Enforce tool usage per assistant turn for restoration.
             # Any step that does not call a tool is treated as early stop and penalized.
-            if kwargs.get("data_source") == "restoration":
+            if getattr(agent_data, "data_source", "") == "restoration":
                 agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
                 agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
             return AgentState.TERMINATED
