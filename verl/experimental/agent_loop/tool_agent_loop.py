@@ -75,6 +75,7 @@ class AgentData:
         self.tool_rewards: list[float] = []
         self.user_turns = 0
         self.assistant_turns = 0
+        self.total_tool_calls = 0
 
         # Temporary state for tool calls
         self.tool_calls: list[FunctionCall] = []
@@ -88,6 +89,8 @@ class AgentData:
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
     EARLY_STOP_PENALTY = -5.0
+    NO_TOOL_LENGTH_THRESHOLD = 256
+    NO_TOOL_LENGTH_PENALTY_ALPHA = 3.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -203,6 +206,36 @@ class ToolAgentLoop(AgentLoopBase):
                 logger.error(f"Invalid state: {state}")
                 state = AgentState.TERMINATED
 
+        # Final reward shaping guardrail for restoration tasks.
+        # This ensures no-tool penalty is applied regardless of how the loop terminated
+        # (e.g., max response length, max turns, or regular stop).
+        if getattr(agent_data, "data_source", "") == "restoration":
+            response_len = len(agent_data.response_ids or [])
+            no_tool_call = agent_data.total_tool_calls == 0
+            if no_tool_call and not agent_data.extra_fields.get("no_tool_call_penalty_applied", False):
+                agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
+                agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
+                agent_data.extra_fields["no_tool_call_penalty_applied"] = True
+
+            # Penalize length-hacking when no tool was used in the whole trajectory.
+            # The penalty increases linearly after a safe threshold.
+            if len(agent_data.tool_rewards) > 0 and response_len > self.NO_TOOL_LENGTH_THRESHOLD and no_tool_call:
+                denom = max(1, self.response_length - self.NO_TOOL_LENGTH_THRESHOLD)
+                length_ratio = (response_len - self.NO_TOOL_LENGTH_THRESHOLD) / denom
+                length_ratio = max(0.0, min(1.0, float(length_ratio)))
+                no_tool_length_penalty = -self.NO_TOOL_LENGTH_PENALTY_ALPHA * length_ratio
+                agent_data.tool_rewards.append(no_tool_length_penalty)
+                agent_data.extra_fields["no_tool_length_penalty"] = no_tool_length_penalty
+
+            # Expose decomposed reward parts for easier diagnosis in logs.
+            agent_data.extra_fields["reward_components"] = {
+                "early_stop_penalty": self.EARLY_STOP_PENALTY if no_tool_call else 0.0,
+                "no_tool_length_threshold": self.NO_TOOL_LENGTH_THRESHOLD,
+                "no_tool_length_penalty_alpha": self.NO_TOOL_LENGTH_PENALTY_ALPHA,
+                "response_length": response_len,
+                "tool_reward_sum": float(sum(agent_data.tool_rewards)) if agent_data.tool_rewards else 0.0,
+            }
+
         # Finalize output
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
         prompt_ids = agent_data.prompt_ids[: len(agent_data.prompt_ids) - len(agent_data.response_mask)]
@@ -304,6 +337,7 @@ class ToolAgentLoop(AgentLoopBase):
             if getattr(agent_data, "data_source", "") == "restoration":
                 agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
                 agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
+                agent_data.extra_fields["no_tool_call_penalty_applied"] = True
             return AgentState.TERMINATED
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
@@ -316,6 +350,7 @@ class ToolAgentLoop(AgentLoopBase):
         for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
             tool_call_names.append(tool_call.name)
+        agent_data.total_tool_calls += len(tool_call_names)
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)

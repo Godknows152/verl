@@ -262,13 +262,20 @@ class AsyncRolloutRequest(BaseModel):
         attention_mask: torch.Tensor,
         multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None,
     ) -> torch.Tensor:
-        # special case for qwen2vl
+        # special case for qwen2vl/qwen3vl
         is_qwen2vl = (
             hasattr(processing_class, "image_processor")
             and "Qwen2VLImageProcessor" in processing_class.image_processor.__class__.__name__
         )
-        if is_qwen2vl:
+        is_qwen3vl = (
+            hasattr(processing_class, "image_processor")
+            and "Qwen3VLImageProcessor" in processing_class.image_processor.__class__.__name__
+        )
+        if is_qwen2vl or is_qwen3vl:
             from verl.models.transformers.qwen2_vl import get_rope_index
+
+            if is_qwen3vl:
+                from verl.models.transformers.qwen3_vl import get_rope_index
 
             image_grid_thw = video_grid_thw = second_per_grid_ts = None
             if multi_modal_inputs:
@@ -282,14 +289,17 @@ class AsyncRolloutRequest(BaseModel):
             assert attention_mask.dim() == 2 and attention_mask.shape[0] == 1, (
                 f"attention_mask should be 2D with batch size 1, but got shape {attention_mask.shape}"
             )
-            new_position_ids = get_rope_index(
-                processing_class,
-                input_ids=input_ids.squeeze(0),
-                image_grid_thw=image_grid_thw,
-                video_grid_thw=video_grid_thw,
-                second_per_grid_ts=second_per_grid_ts,
-                attention_mask=attention_mask.squeeze(0),
-            )
+            rope_kwargs = {
+                "input_ids": input_ids.squeeze(0),
+                "image_grid_thw": image_grid_thw,
+                "video_grid_thw": video_grid_thw,
+                "attention_mask": attention_mask.squeeze(0),
+            }
+            # qwen2-vl supports second_per_grid_ts, while qwen3-vl does not.
+            if is_qwen2vl:
+                rope_kwargs["second_per_grid_ts"] = second_per_grid_ts
+
+            new_position_ids = get_rope_index(processing_class, **rope_kwargs)
             return new_position_ids  # (3, seq_len)
         else:
             return compute_position_id_with_mask(attention_mask)  # (1, seq_len)

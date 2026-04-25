@@ -35,7 +35,7 @@ tools:
       iqa_device: cuda:3
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       alpha: 0.9
-      reward_scale: 1.0
+      reward_scale: 5.0
     tool_schema:
       type: "function"
       function:
