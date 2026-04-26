@@ -13,12 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
 from typing import Any, Optional
 from uuid import uuid4
 
 from verl.utils.rollout_trace import rollout_trace_op
 
 from .schemas import OpenAIFunctionToolSchema, ToolResponse
+
+_base_logger = logging.getLogger(__name__)
 
 
 class BaseTool:
@@ -38,7 +41,8 @@ class BaseTool:
         self.tool_schema = tool_schema or self.get_openai_tool_schema()
         assert self.tool_schema is not None, "Tool schema is not set!"
         self.name = self.tool_schema.function.name
-        print(json.dumps(self.tool_schema.model_dump(exclude_unset=True, exclude_none=True), indent=2))
+        _base_logger.debug("Tool schema for %s:\n%s", self.name,
+                           json.dumps(self.tool_schema.model_dump(exclude_unset=True, exclude_none=True), indent=2))
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         return self.tool_schema

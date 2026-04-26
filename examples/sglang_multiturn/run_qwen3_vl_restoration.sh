@@ -38,6 +38,9 @@ PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/examples/sglang_multiturn/config"
 LOG_DIR="/home/LXJ/Python_Projects/verl/log"
 
+# Expose LOG_DIR to restoration_tool.py file handler so INFO logs land next to training logs
+export VERL_LOG_DIR="$LOG_DIR"
+
 # ---------------------------------------------------------------------------
 # Key parameters - all live in restoration_multiturn_grpo.yaml
 # Override via env if needed: e.g. TRAIN_FILES=xxx bash run_xxx.sh

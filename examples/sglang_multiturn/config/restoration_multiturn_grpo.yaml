@@ -29,7 +29,7 @@ data:
   val_max_samples: 16
   train_batch_size: 16
   max_prompt_length: 2048
-  max_response_length: 512
+  max_response_length: 2048
   # Return raw multi-turn chat structure (required by the agent loop)
   return_raw_chat: true
   # IMPORTANT: Must be false for multi-turn with tool-generated images —
@@ -128,3 +128,5 @@ trainer:
           PYTHONUNBUFFERED: "1"
           XFORMERS_IGNORE_FLASH_VERSION_CHECK: "1"
           SGLANG_DISABLE_CUDNN_CHECK: "1"
+          VERL_LOGGING_LEVEL: "WARN"
+          VERL_LOG_DIR: "/home/LXJ/Python_Projects/verl/log"

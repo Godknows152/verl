@@ -57,7 +57,24 @@ from .schemas import OpenAIFunctionToolSchema, ToolResponse
 from verl.utils.rollout_trace import rollout_trace_op
 
 logger = logging.getLogger(__name__)
-logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+# Always capture INFO-level messages to a dedicated file so that detailed tool
+# execution info is available for debugging even when VERL_LOGGING_LEVEL=WARN.
+# INFO messages are NOT forwarded to the terminal / tee log.
+logger.propagate = False  # prevent INFO from leaking to the root console handler
+_console_level = os.getenv("VERL_LOGGING_LEVEL", "WARN").upper()
+logger.setLevel(logging.INFO)  # logger must be at INFO so file handler receives INFO msgs
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(getattr(logging, _console_level, logging.WARNING))
+_console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logger.addHandler(_console_handler)
+
+_log_dir = os.getenv("VERL_LOG_DIR", "/tmp")
+_file_handler = logging.FileHandler(os.path.join(_log_dir, "restoration_tool_info.log"), mode="a", encoding="utf-8")
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logger.addHandler(_file_handler)
 
 # Add restoration_tools/agent_tools to sys.path for importing RestorationToolkit
 AGENT_TOOLS_PATH = Path(__file__).resolve().parent.parent.parent / 'restoration_tools' / 'agent_tools'
