@@ -41,7 +41,7 @@ data:
 algorithm:
   adv_estimator: grpo
   kl_ctrl:
-    kl_coef: 0.05
+    kl_coef: 0.2
 
 # ---------------------------------------------------------------------------
 # Actor / Rollout / Ref
@@ -54,9 +54,9 @@ actor_rollout_ref:
   actor:
     optim:
       lr: 1.0e-5
-    entropy_coeff: 0.2
+    entropy_coeff: 0.01
     use_kl_loss: true
-    kl_loss_coef: 0.05
+    kl_loss_coef: 0.2
     fsdp_config:
       # Use bf16 to match Flash Attention 2 requirements and reduce memory pressure
       model_dtype: bfloat16
@@ -111,10 +111,11 @@ trainer:
   # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 100
-  test_freq: 100
-  total_epochs: 5
-  val_before_train: false
+  save_freq: 30
+  test_freq: 30
+  total_epochs: 3
+  max_actor_ckpt_to_keep: 6
+  val_before_train: true
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
   ray_kwargs:
@@ -126,3 +127,10 @@ trainer:
           PYTHONUNBUFFERED: "1"
           XFORMERS_IGNORE_FLASH_VERSION_CHECK: "1"
           SGLANG_DISABLE_CUDNN_CHECK: "1"
+          # Proxy settings for HuggingFace model downloads in Ray workers
+          https_proxy: "http://127.0.0.1:7897"
+          http_proxy: "http://127.0.0.1:7897"
+          all_proxy: "socks5://127.0.0.1:7897"
+          HTTPS_PROXY: "http://127.0.0.1:7897"
+          HTTP_PROXY: "http://127.0.0.1:7897"
+          ALL_PROXY: "socks5://127.0.0.1:7897"

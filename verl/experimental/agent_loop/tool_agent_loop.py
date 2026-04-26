@@ -88,7 +88,8 @@ class AgentData:
 
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
-    EARLY_STOP_PENALTY = -15.0
+    EARLY_STOP_PENALTY = -50.0
+    TOOL_CALL_REWARD = 2.0
     NO_TOOL_LENGTH_THRESHOLD = 256
     NO_TOOL_LENGTH_PENALTY_ALPHA = 3.0
 
@@ -212,6 +213,7 @@ class ToolAgentLoop(AgentLoopBase):
         if getattr(agent_data, "data_source", "") == "restoration":
             response_len = len(agent_data.response_ids or [])
             no_tool_call = agent_data.total_tool_calls == 0
+
             if no_tool_call and not agent_data.extra_fields.get("no_tool_call_penalty_applied", False):
                 agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
                 agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
@@ -229,6 +231,7 @@ class ToolAgentLoop(AgentLoopBase):
 
             # Expose decomposed reward parts for easier diagnosis in logs.
             agent_data.extra_fields["reward_components"] = {
+                "tool_call_reward_per_step": self.TOOL_CALL_REWARD,
                 "early_stop_penalty": self.EARLY_STOP_PENALTY if no_tool_call else 0.0,
                 "no_tool_length_threshold": self.NO_TOOL_LENGTH_THRESHOLD,
                 "no_tool_length_penalty_alpha": self.NO_TOOL_LENGTH_PENALTY_ALPHA,
@@ -403,7 +406,7 @@ class ToolAgentLoop(AgentLoopBase):
                 )
 
             if tool_reward is not None:
-                agent_data.tool_rewards.append(tool_reward)
+                agent_data.tool_rewards.append(tool_reward + self.TOOL_CALL_REWARD)
 
         agent_data.messages.extend(add_messages)
 
