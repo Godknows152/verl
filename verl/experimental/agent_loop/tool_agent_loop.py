@@ -358,6 +358,10 @@ class ToolAgentLoop(AgentLoopBase):
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
 
+        # Check if any tool response signals a stop action — this must terminate the loop.
+        # We detect it via the metrics dict returned by _call_tool (action == "stop").
+        stop_triggered = any(res.get("action") == "stop" for _, _, res in responses)
+
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
         for tool_response, tool_reward, _ in responses:
@@ -458,6 +462,11 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+
+        # If the model called stop, terminate the loop now so the trajectory ends
+        # at the model's chosen stopping point rather than being forced by max_turns.
+        if stop_triggered:
+            return AgentState.TERMINATED
         return AgentState.GENERATING
 
     async def _call_tool(
