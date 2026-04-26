@@ -57,19 +57,7 @@ from .schemas import OpenAIFunctionToolSchema, ToolResponse
 from verl.utils.rollout_trace import rollout_trace_op
 
 logger = logging.getLogger(__name__)
-_log_level = os.getenv("VERL_LOGGING_LEVEL", "WARN")
-logger.setLevel(_log_level)
-
-# Route tool logs to a dedicated file (INFO+ so we capture details)
-# Console handler stays at the configured level to avoid flooding terminal
-_tool_log_dir = os.getenv("VERL_LOG_DIR", "/tmp")
-_tool_log_file = os.path.join(_tool_log_dir, "restoration_tools.log")
-_file_handler = logging.FileHandler(_tool_log_file, mode="a")
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(
-    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-)
-logger.addHandler(_file_handler)
+logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # Add restoration_tools/agent_tools to sys.path for importing RestorationToolkit
 AGENT_TOOLS_PATH = Path(__file__).resolve().parent.parent.parent / 'restoration_tools' / 'agent_tools'

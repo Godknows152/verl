@@ -13,24 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-import logging
 from typing import Any, Optional
 from uuid import uuid4
 
 from verl.utils.rollout_trace import rollout_trace_op
-
-_tool_logger = logging.getLogger("verl.tools.base_tool")
-import os
-_log_level = os.getenv("VERL_LOGGING_LEVEL", "WARN")
-_tool_logger.setLevel(_log_level)
-_tool_log_dir = os.getenv("VERL_LOG_DIR", "/tmp")
-_tool_log_file = os.path.join(_tool_log_dir, "restoration_tools.log")
-_file_handler = logging.FileHandler(_tool_log_file, mode="a")
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(
-    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-)
-_tool_logger.addHandler(_file_handler)
 
 from .schemas import OpenAIFunctionToolSchema, ToolResponse
 
@@ -52,10 +38,7 @@ class BaseTool:
         self.tool_schema = tool_schema or self.get_openai_tool_schema()
         assert self.tool_schema is not None, "Tool schema is not set!"
         self.name = self.tool_schema.function.name
-        _tool_logger.info(
-            "Tool schema initialized:\n%s",
-            json.dumps(self.tool_schema.model_dump(exclude_unset=True, exclude_none=True), indent=2),
-        )
+        print(json.dumps(self.tool_schema.model_dump(exclude_unset=True, exclude_none=True), indent=2))
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         return self.tool_schema

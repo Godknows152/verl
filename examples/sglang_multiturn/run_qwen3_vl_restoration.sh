@@ -18,10 +18,8 @@ export HYDRA_FULL_ERROR=1
 export HF_HUB_DISABLE_SSL_VERIFICATION=1
 ulimit -n 65535
 
-# Enable INFO-level logging for tools; training core logs already go to swanlab/stdout
-export VERL_LOGGING_LEVEL=INFO
-# Route tool logs (model loading/unloading, IQA, execution) to the same log directory
-export VERL_LOG_DIR="$LOG_DIR"
+# Keep tool logging at warning level unless explicitly overridden
+export VERL_LOGGING_LEVEL=WARN
 
 # Fix CUDA library path - PyTorch's CUDA 12.8 runtime must take priority over system CUDA 12.4
 export LD_LIBRARY_PATH=/home/LXJ/anaconda3/envs/verl/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/home/LXJ/anaconda3/envs/verl/lib/python3.12/site-packages/torch/lib:/home/LXJ/anaconda3/envs/verl/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH

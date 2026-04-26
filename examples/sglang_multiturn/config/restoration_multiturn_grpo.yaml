@@ -26,9 +26,10 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
+  val_max_samples: 16
   train_batch_size: 16
   max_prompt_length: 2048
-  max_response_length: 4096
+  max_response_length: 512
   # Return raw multi-turn chat structure (required by the agent loop)
   return_raw_chat: true
   # IMPORTANT: Must be false for multi-turn with tool-generated images —
@@ -88,8 +89,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 10
-      max_assistant_turns: 10
+      max_user_turns: 6
+      max_assistant_turns: 7
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
@@ -115,7 +116,7 @@ trainer:
   test_freq: 30
   total_epochs: 3
   max_actor_ckpt_to_keep: 6
-  val_before_train: true
+  val_before_train: false
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
   ray_kwargs:
