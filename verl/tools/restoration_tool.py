@@ -111,7 +111,7 @@ DEFAULT_WEIGHT: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2]
 
 # Module-level caches
 _toolkit_instance = None
-_iqa_instances = {}
+_iqa_instance = None
 
 
 def get_toolkit(
@@ -147,18 +147,18 @@ def get_toolkit(
 
 
 def get_iqa_scorer(device: str = 'cuda'):
-    """Lazy load and cache IQAScore instances per device."""
-    global _iqa_instances
-    if device not in _iqa_instances:
+    """Lazy load and cache the IQAScore instance."""
+    global _iqa_instance
+    if _iqa_instance is None:
         try:
             from iqa_reward import IQAScore
 
-            _iqa_instances[device] = IQAScore(device=device)
+            _iqa_instance = IQAScore(device=device)
             logger.info(f"IQAScore initialized on {device}")
         except Exception as e:
-            logger.error(f"Failed to initialize IQAScore on {device}: {e}")
+            logger.error(f"Failed to initialize IQAScore: {e}")
             raise
-    return _iqa_instances[device]
+    return _iqa_instance
 
 
 def _load_restoration_tool_runtime_config(tool_config_path: str) -> dict[str, Any] | None:
@@ -227,7 +227,6 @@ class RestorationTool(BaseTool):
 
         self.device = config.get("device", "cuda")
         self.iqa_device = config.get("iqa_device", self.device)
-        self.iqa_devices = config.get("iqa_devices", [self.iqa_device])
         self.preload_models = config.get("models", None)
         self.model_devices = config.get("model_devices", [self.device])
         self.model_device_map = config.get("model_device_map", None)
@@ -253,7 +252,7 @@ class RestorationTool(BaseTool):
         logger.info(
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
             f"use_iqa={self.use_iqa}, alpha={self.alpha}, reward_scale={self.reward_scale}, "
-            f"model_devices={self.model_devices}, iqa_devices={self.iqa_devices}"
+            f"model_devices={self.model_devices}"
         )
 
     @property
@@ -271,17 +270,9 @@ class RestorationTool(BaseTool):
 
     @property
     def iqa(self):
-        # Kept for backward compatibility. Multi-device IQA uses _get_iqa_scorer_for_image.
         if self._iqa is None and self.use_iqa:
             self._iqa = get_iqa_scorer(device=self.iqa_device)
         return self._iqa
-
-    def _get_iqa_scorer_for_image(self, image_path: str):
-        """Select IQA scorer device by hashing image path for even multi-GPU distribution."""
-        if not self.iqa_devices:
-            return get_iqa_scorer(device=self.iqa_device)
-        device = self.iqa_devices[hash(image_path) % len(self.iqa_devices)]
-        return get_iqa_scorer(device=device)
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         return self.tool_schema
@@ -291,8 +282,7 @@ class RestorationTool(BaseTool):
         if not self.use_iqa:
             return [0.0, 0.0, 0.0, 0.0, 0.0]
         try:
-            scorer = self._get_iqa_scorer_for_image(image_path)
-            scores = scorer.get_iqa_score(image_path)  # returns list of 5 floats
+            scores = self.iqa.get_iqa_score(image_path)  # returns list of 5 floats
             return list(scores)
         except Exception as e:
             logger.warning(f"IQA scoring failed for {image_path}: {e}")

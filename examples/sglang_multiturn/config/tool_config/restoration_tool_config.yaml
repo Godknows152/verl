@@ -22,18 +22,18 @@ tools:
       type: native
       # Base device fallback. Actual restoration models are distributed across model_devices.
       device: cuda:0
-      # Evenly distribute restoration models across all 4 GPUs.
-      model_devices: [cuda:0, cuda:1, cuda:2, cuda:3]
+      # Distribute restoration models across the first 3 GPUs,
+      # leaving gpu3 dedicated to IQA models only.
+      model_devices: [cuda:0, cuda:1, cuda:2]
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
       # Use phase-managed loading: preload all models at sampling start,
       # and unload all models once after sampling finishes.
       preload: false
       auto_unload: false
-      # IQA reward computation settings (hash-based per-image routing across devices)
+      # IQA reward computation settings: pin IQA to gpu3.
       use_iqa: true
-      iqa_device: cuda:0
-      iqa_devices: [cuda:0, cuda:1, cuda:2, cuda:3]
+      iqa_device: cuda:3
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       alpha: 0.9
       reward_scale: 5.0
