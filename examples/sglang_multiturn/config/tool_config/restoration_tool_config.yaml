@@ -27,9 +27,10 @@ tools:
       device: cuda:3
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
-      # Avoid GPU memory conflicts with SGLang by loading models dynamically
+      # Use phase-managed loading: preload all models at sampling start,
+      # and unload all models once after sampling finishes.
       preload: false
-      auto_unload: true
+      auto_unload: false
       # IQA reward computation settings
       use_iqa: true
       iqa_device: cuda:3

@@ -547,6 +547,19 @@ class AgentLoopWorker:
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
         config = self.rollout_config
+
+        # Phase-managed restoration model loading strategy:
+        # load all restoration models once at sampling start, unload once after sampling.
+        did_phase_preload = False
+        tool_config_path = config.multi_turn.tool_config_path if config.multi_turn else None
+        if tool_config_path:
+            try:
+                from verl.tools.restoration_tool import preload_restoration_models_for_sampling
+
+                resolved_tool_config_path = resolve_config_path(tool_config_path)
+                did_phase_preload = preload_restoration_models_for_sampling(resolved_tool_config_path)
+            except Exception as e:
+                logger.warning(f"Phase-managed preload skipped due to error: {e}")
         sampling_params = dict(
             temperature=config.temperature,
             top_p=config.top_p,
@@ -591,21 +604,30 @@ class AgentLoopWorker:
             batch.meta_info.get("global_steps", -1), index.tolist(), batch.meta_info.get("validate", False)
         )
 
-        tasks = []
-        for i in range(len(batch)):
-            trace_this_sample = i in traced_indices
-            kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
-            tasks.append(
-                asyncio.create_task(
-                    self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
+        try:
+            tasks = []
+            for i in range(len(batch)):
+                trace_this_sample = i in traced_indices
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                tasks.append(
+                    asyncio.create_task(
+                        self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
+                    )
                 )
-            )
-        outputs = await asyncio.gather(*tasks)
+            outputs = await asyncio.gather(*tasks)
 
-        output = self._postprocess(
-            outputs, input_non_tensor_batch=batch.non_tensor_batch, validate=batch.meta_info.get("validate", False)
-        )
-        return output
+            output = self._postprocess(
+                outputs, input_non_tensor_batch=batch.non_tensor_batch, validate=batch.meta_info.get("validate", False)
+            )
+            return output
+        finally:
+            if did_phase_preload:
+                try:
+                    from verl.tools.restoration_tool import unload_restoration_models_after_sampling
+
+                    unload_restoration_models_after_sampling()
+                except Exception as e:
+                    logger.warning(f"Phase-managed unload skipped due to error: {e}")
 
     async def _run_agent_loop(
         self,

@@ -156,6 +156,49 @@ def get_iqa_scorer(device: str = 'cuda'):
     return _iqa_instance
 
 
+def _load_restoration_tool_runtime_config(tool_config_path: str) -> dict[str, Any] | None:
+    """Load runtime config for RestorationTool from tool_config yaml."""
+    try:
+        from omegaconf import OmegaConf
+
+        cfg = OmegaConf.load(tool_config_path)
+        for tool_item in cfg.get("tools", []):
+            if tool_item.get("class_name") == "verl.tools.restoration_tool.RestorationTool":
+                return dict(tool_item.get("config", {}))
+    except Exception as e:
+        logger.warning(f"Failed to load tool config from {tool_config_path}: {e}")
+    return None
+
+
+def preload_restoration_models_for_sampling(tool_config_path: str) -> bool:
+    """Preload all restoration models at sampling stage start.
+
+    Returns True if preload path was executed (or models already loaded), False otherwise.
+    """
+    runtime_cfg = _load_restoration_tool_runtime_config(tool_config_path)
+    if runtime_cfg is None:
+        return False
+
+    # Phase-managed mode: keep models resident during rollout; unload as a batch afterwards.
+    device = runtime_cfg.get("device", "cuda")
+    models = runtime_cfg.get("models", None)
+    toolkit = get_toolkit(device=device, models=models, preload=False, auto_unload=False)
+    toolkit.auto_unload = False
+    toolkit.load_models()
+    logger.info("Preloaded all restoration models for sampling stage")
+    return True
+
+
+def unload_restoration_models_after_sampling() -> bool:
+    """Unload all restoration models at sampling stage end."""
+    global _toolkit_instance
+    if _toolkit_instance is None:
+        return False
+    _toolkit_instance.unload_all_models()
+    logger.info("Unloaded all restoration models after sampling stage")
+    return True
+
+
 class RestorationTool(BaseTool):
     """A tool for iterative image restoration / degradation removal.
 
@@ -173,7 +216,14 @@ class RestorationTool(BaseTool):
         self.preload_models = config.get("models", None)
         self.output_dir = config.get("output_dir", "/tmp/verl_restoration")
         self.preload = config.get("preload", True)
-        self.auto_unload = config.get("auto_unload", False)
+        # Disable per-tool-call auto-unload mode. We use phase-managed load/unload:
+        # preload once at sampling start, unload once after sampling.
+        configured_auto_unload = bool(config.get("auto_unload", False))
+        if configured_auto_unload:
+            logger.warning(
+                "auto_unload=true is ignored in phase-managed mode; forcing auto_unload=false"
+            )
+        self.auto_unload = False
         self.use_iqa = config.get("use_iqa", True)
         self.alpha = float(config.get("alpha", 0.9))       # marginal-improvement weight
         self.beta = 1.0 - self.alpha                       # identity-improvement weight
