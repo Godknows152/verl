@@ -1,5 +1,20 @@
 # Image restoration tools, models, weights and dependencies
 restoration_tools/
+
+# Keep restoration source code under version control, but still ignore heavy assets.
+!restoration_tools/
+restoration_tools/*
+!restoration_tools/__init__.py
+!restoration_tools/preload_iqa_models.py
+!restoration_tools/agent_tools/
+restoration_tools/agent_tools/*
+!restoration_tools/agent_tools/__init__.py
+!restoration_tools/agent_tools/restoration_toolkit.py
+!restoration_tools/agent_tools/iqa_reward.py
+restoration_tools/checkpoints/
+restoration_tools/dependences/
+restoration_tools/**/.git/
+
 data/
 log/
 
