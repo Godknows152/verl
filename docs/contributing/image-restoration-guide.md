@@ -114,10 +114,11 @@ Rollout 循环（SGLang）
 
 ## GPU 显存布局
 
-以 4 张 GPU 训练为例：
+以当前 4 张 GPU 配置为例：
 
-- **GPU 0–2**：SGLang rollout（由 `gpu_memory_utilization: 0.45` 控制）
-- **GPU 3**：RestorationToolkit + IQA 模型（通过 `device: cuda:3` 配置）
+- **GPU 0–3**：SGLang rollout
+- **GPU 0–2**：额外承载 RestorationToolkit 中的修复模型（`model_devices: [cuda:0, cuda:1, cuda:2]`）
+- **GPU 3**：额外承载 IQA 模型（`iqa_device: cuda:3`），因此通常是最先出现显存压力的位置
 
 为避免与 SGLang memory-saver 产生冲突，修复模型采用**懒加载**策略：
 - `preload: false` — 按需加载模型

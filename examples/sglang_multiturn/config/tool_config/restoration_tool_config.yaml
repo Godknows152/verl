@@ -22,8 +22,8 @@ tools:
       type: native
       # Base device fallback. Actual restoration models are distributed across model_devices.
       device: cuda:0
-      # Distribute restoration models across the first 3 GPUs,
-      # leaving gpu3 dedicated to IQA models only.
+      # Distribute restoration models across the first 3 GPUs.
+      # IQA stays pinned to gpu3, but rollout may also use gpu3 when TP=1.
       model_devices: [cuda:0, cuda:1, cuda:2]
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
@@ -32,6 +32,7 @@ tools:
       preload: false
       auto_unload: false
       # IQA reward computation settings: pin IQA to gpu3.
+      # This means gpu3 is usually the first shared-memory bottleneck during rollout.
       use_iqa: true
       iqa_device: cuda:3
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
