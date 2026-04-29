@@ -110,6 +110,11 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
+  # Resume from the last saved checkpoint automatically.
+  # "auto" reads latest_checkpointed_iteration.txt under default_local_dir
+  # and restores actor weights, optimizer state, and dataloader position.
+  resume_mode: auto
+  default_local_dir: checkpoints/verl/multiturn_grpo_0429
   log_val_generations: 5
   # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models share remaining VRAM,
   # with GPU 3 usually the first pressure point because IQA is pinned there.
@@ -120,7 +125,7 @@ trainer:
   test_freq: 10
   total_epochs: 3
   max_actor_ckpt_to_keep: 6
-  val_before_train: true
+  val_before_train: false
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
   ray_kwargs:
