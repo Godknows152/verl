@@ -315,15 +315,10 @@ class RestorationTool(BaseTool):
         actions_history: list[str],
     ) -> str:
         """Generate human-readable feedback for the model's next turn."""
-        score_names = ["QAlign", "MANIQA", "MUSIQ", "CLIPIQA", "NIQE"]
-        score_strs = ", ".join(
-            f"{n}={v:.4f}" for n, v in zip(score_names, curr_scores)
-        )
         history_str = " → ".join(actions_history) if actions_history else "none"
 
         lines = [
             f"Step {step}: Applied '{action}'.",
-            f"Current IQA scores: [{score_strs}]",
             f"Step reward: {reward:.4f}",
             f"Action history: {history_str}",
         ]
