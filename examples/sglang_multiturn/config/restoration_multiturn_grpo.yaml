@@ -26,7 +26,7 @@ data:
     - data/restoration/test.parquet
   val_files:
     - data/restoration/test.parquet
-  val_max_samples: 16
+  val_max_samples: 8
   train_batch_size: 16
   max_prompt_length: 2048
   max_response_length: 3072
@@ -58,16 +58,13 @@ actor_rollout_ref:
     entropy_coeff: 0.01
     use_kl_loss: true
     kl_loss_coef: 0.1
-    use_dynamic_bsz: true
-    # Dynamic batch token budget per GPU (start conservative for 4-GPU + tool-sharing setup)
-    ppo_max_token_len_per_gpu: 12288
     fsdp_config:
       # Use bf16 to match Flash Attention 2 requirements and reduce memory pressure
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 8
-    ppo_micro_batch_size_per_gpu: 4
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: 8
 
   rollout:
     name: sglang
@@ -84,9 +81,7 @@ actor_rollout_ref:
     # with GPU 3 typically the tightest due to IQA placement.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
     gpu_memory_utilization: 0.575
-    log_prob_use_dynamic_bsz: true
-    log_prob_max_token_len_per_gpu: 12288
-    log_prob_micro_batch_size_per_gpu: 2
+    log_prob_micro_batch_size_per_gpu: 8
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
@@ -104,8 +99,6 @@ actor_rollout_ref:
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
 
   ref:
-    log_prob_use_dynamic_bsz: true
-    log_prob_max_token_len_per_gpu: 12288
     log_prob_micro_batch_size_per_gpu: 2
 
 # ---------------------------------------------------------------------------
