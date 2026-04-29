@@ -398,7 +398,7 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
-        for tool_response, tool_reward, _ in responses:
+        for tool_response, tool_reward, tool_metrics in responses:
             # Create message from tool response
             if tool_response.image or tool_response.video:
                 # Multi-modal content with structured format
@@ -444,7 +444,9 @@ class ToolAgentLoop(AgentLoopBase):
                 )
 
             if tool_reward is not None:
-                agent_data.tool_rewards.append(tool_reward + self.TOOL_CALL_REWARD)
+                tool_metrics = tool_metrics or {}
+                tool_call_reward = 0.0 if tool_metrics.get("skip_tool_call_reward") else self.TOOL_CALL_REWARD
+                agent_data.tool_rewards.append(tool_reward + tool_call_reward)
 
         agent_data.messages.extend(add_messages)
 
@@ -524,7 +526,7 @@ class ToolAgentLoop(AgentLoopBase):
                     text=f"Error when executing tool: unknown tool '{tool_call.name}'",
                 ),
                 -1.0,
-                {},
+                {"skip_tool_call_reward": True},
             )
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")
@@ -533,7 +535,7 @@ class ToolAgentLoop(AgentLoopBase):
                     text=f"Error when executing tool: {e}",
                 ),
                 0.0,
-                {},
+                {"skip_tool_call_reward": True},
             )
 
         tool_response_text = tool_execution_response.text

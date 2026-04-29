@@ -108,6 +108,10 @@ SCORE_WEIGHT_MAP: dict[str, list[float]] = {
     'fog':         [1.5/5,   0.5/5,   1.5/5,   0.5/5,   1./5   ],
 }
 DEFAULT_WEIGHT: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2]
+FAILURE_REWARD = -5.0
+STOP_MIN_STEP = 4
+STOP_IQA_DELTA_THRESHOLD = 5.0
+STOP_SUCCESS_REWARD = 3.0
 
 # Module-level caches
 _toolkit_instance = None
@@ -306,6 +310,18 @@ class RestorationTool(BaseTool):
         mixed = self.alpha * marginal + self.beta * identity
         return float(torch.clamp(torch.tensor(mixed * self.reward_scale), -10.0, 10.0).item())
 
+    def _calculate_identity_delta(
+        self,
+        curr_scores: list[float],
+        identity_scores: list[float],
+        weights: list[float],
+    ) -> float:
+        """Compute weighted IQA improvement over the original degraded image."""
+        curr_t = torch.tensor(curr_scores, dtype=torch.float32)
+        iden_t = torch.tensor(identity_scores, dtype=torch.float32)
+        w_t = torch.tensor(weights, dtype=torch.float32)
+        return float(((curr_t - iden_t) * w_t).sum().item())
+
     def _generate_feedback(
         self,
         action: str,
@@ -414,23 +430,47 @@ class RestorationTool(BaseTool):
                 f"Allowed: {', '.join(sorted(ALLOWED_ACTIONS))}"
             )
             logger.warning(error_msg)
-            return ToolResponse(text=error_msg), -0.1, {"error": "invalid_action"}
+            return (
+                ToolResponse(text=error_msg),
+                FAILURE_REWARD,
+                {"error": "invalid_action", "skip_tool_call_reward": True},
+            )
 
         instance = self._instance_dict.get(instance_id)
         if instance is None:
             error_msg = f"Instance {instance_id} not found"
             logger.error(error_msg)
-            return ToolResponse(text=error_msg), -0.1, {"error": "instance_not_found"}
+            return (
+                ToolResponse(text=error_msg),
+                FAILURE_REWARD,
+                {"error": "instance_not_found", "skip_tool_call_reward": True},
+            )
 
         if action == "stop":
             step = instance["step"]
-            # Penalise premature stopping; allow free stop after step 4
-            reward = 0.0 if step >= 4 else -5.0
-            logger.info(f"Instance {instance_id}: stop action at step {step}, reward={reward}")
+            curr_scores = instance["scores_history"][-1]
+            identity_scores = instance["identity_scores"]
+            weights = instance["weights"]
+            identity_delta = self._calculate_identity_delta(curr_scores, identity_scores, weights)
+            reward = (
+                STOP_SUCCESS_REWARD
+                if step >= STOP_MIN_STEP and identity_delta > STOP_IQA_DELTA_THRESHOLD
+                else 0.0
+            )
+            instance["rewards_history"].append(reward)
+            logger.info(
+                f"Instance {instance_id}: stop action at step {step}, "
+                f"identity_delta={identity_delta:.4f}, reward={reward}"
+            )
             return (
                 ToolResponse(text=f"Restoration stopped after {step} step(s)."),
                 reward,
-                {"action": "stop", "step": step},
+                {
+                    "action": "stop",
+                    "step": step,
+                    "identity_delta": identity_delta,
+                    "skip_tool_call_reward": True,
+                },
             )
 
         current_image = instance["current_image"]
@@ -449,7 +489,11 @@ class RestorationTool(BaseTool):
             if not output_path or not os.path.exists(output_path):
                 error_msg = "Restoration failed: no output generated"
                 logger.error(error_msg)
-                return ToolResponse(text=error_msg), -0.1, {"error": "restoration_failed"}
+                return (
+                    ToolResponse(text=error_msg),
+                    FAILURE_REWARD,
+                    {"error": "restoration_failed", "skip_tool_call_reward": True},
+                )
 
             # Update instance state
             instance["processed_images"].append((action, output_path))
@@ -505,7 +549,11 @@ class RestorationTool(BaseTool):
         except Exception as e:
             error_msg = f"Restoration error during '{action}': {e}"
             logger.exception(error_msg)
-            return ToolResponse(text=error_msg), -0.1, {"error": str(e)}
+            return (
+                ToolResponse(text=error_msg),
+                FAILURE_REWARD,
+                {"error": str(e), "skip_tool_call_reward": True},
+            )
 
     async def calc_reward(self, instance_id: str, **kwargs) -> float:
         """Return cumulative reward for the trajectory (sum of step rewards)."""
