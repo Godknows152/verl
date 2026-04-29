@@ -109,9 +109,17 @@ SCORE_WEIGHT_MAP: dict[str, list[float]] = {
 }
 DEFAULT_WEIGHT: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2]
 FAILURE_REWARD = -5.0
-STOP_MIN_STEP = 4
-STOP_IQA_DELTA_THRESHOLD = 5.0
+REPEAT_ACTION_PENALTY = 0.2
+REPEAT_LOW_GAIN_PENALTY = 0.8
+REPEAT_LOW_GAIN_THRESHOLD = 0.05
+STOP_MIN_STEP = 3
+STOP_IQA_DELTA_THRESHOLD = 0.25
 STOP_SUCCESS_REWARD = 3.0
+STOP_PARTIAL_REWARD = 1.0
+STOP_EARLY_PENALTY = -1.0
+STOP_CONTINUE_PENALTY = -0.5
+STOP_RECENT_REWARD_WINDOW = 2
+STOP_RECENT_REWARD_THRESHOLD = 0.25
 
 # Module-level caches
 _toolkit_instance = None
@@ -248,6 +256,19 @@ class RestorationTool(BaseTool):
         self.alpha = float(config.get("alpha", 0.9))       # marginal-improvement weight
         self.beta = 1.0 - self.alpha                       # identity-improvement weight
         self.reward_scale = float(config.get("reward_scale", 1.0))
+        self.repeat_action_penalty = float(config.get("repeat_action_penalty", REPEAT_ACTION_PENALTY))
+        self.repeat_low_gain_penalty = float(config.get("repeat_low_gain_penalty", REPEAT_LOW_GAIN_PENALTY))
+        self.repeat_low_gain_threshold = float(config.get("repeat_low_gain_threshold", REPEAT_LOW_GAIN_THRESHOLD))
+        self.stop_min_step = int(config.get("stop_min_step", STOP_MIN_STEP))
+        self.stop_iqa_delta_threshold = float(config.get("stop_iqa_delta_threshold", STOP_IQA_DELTA_THRESHOLD))
+        self.stop_success_reward = float(config.get("stop_success_reward", STOP_SUCCESS_REWARD))
+        self.stop_partial_reward = float(config.get("stop_partial_reward", STOP_PARTIAL_REWARD))
+        self.stop_early_penalty = float(config.get("stop_early_penalty", STOP_EARLY_PENALTY))
+        self.stop_continue_penalty = float(config.get("stop_continue_penalty", STOP_CONTINUE_PENALTY))
+        self.stop_recent_reward_window = int(config.get("stop_recent_reward_window", STOP_RECENT_REWARD_WINDOW))
+        self.stop_recent_reward_threshold = float(
+            config.get("stop_recent_reward_threshold", STOP_RECENT_REWARD_THRESHOLD)
+        )
 
         os.makedirs(self.output_dir, exist_ok=True)
         self._toolkit = None
@@ -256,6 +277,9 @@ class RestorationTool(BaseTool):
         logger.info(
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
             f"use_iqa={self.use_iqa}, alpha={self.alpha}, reward_scale={self.reward_scale}, "
+            f"repeat_action_penalty={self.repeat_action_penalty}, "
+            f"repeat_low_gain_penalty={self.repeat_low_gain_penalty}, "
+            f"stop_min_step={self.stop_min_step}, "
             f"model_devices={self.model_devices}"
         )
 
@@ -292,14 +316,25 @@ class RestorationTool(BaseTool):
             logger.warning(f"IQA scoring failed for {image_path}: {e}")
             return [0.0, 0.0, 0.0, 0.0, 0.0]
 
+    def _count_consecutive_repeats(self, actions_history: list[str], action: str) -> int:
+        """Count how many trailing actions match the current action."""
+        repeat_count = 0
+        for previous_action in reversed(actions_history):
+            if previous_action != action:
+                break
+            repeat_count += 1
+        return repeat_count
+
     def _calculate_reward(
         self,
         prev_scores: list[float],
         curr_scores: list[float],
         identity_scores: list[float],
         weights: list[float],
-    ) -> float:
-        """Compute step reward as alpha*marginal + beta*identity improvement."""
+        action: str,
+        actions_history: list[str],
+    ) -> dict[str, float]:
+        """Compute reward and diagnostics for a restoration step."""
         prev_t = torch.tensor(prev_scores, dtype=torch.float32)
         curr_t = torch.tensor(curr_scores, dtype=torch.float32)
         iden_t = torch.tensor(identity_scores, dtype=torch.float32)
@@ -308,7 +343,24 @@ class RestorationTool(BaseTool):
         marginal = ((curr_t - prev_t) * w_t).sum().item()
         identity = ((curr_t - iden_t) * w_t).sum().item()
         mixed = self.alpha * marginal + self.beta * identity
-        return float(torch.clamp(torch.tensor(mixed * self.reward_scale), -10.0, 10.0).item())
+        base_reward = mixed * self.reward_scale
+
+        repeat_count = self._count_consecutive_repeats(actions_history, action)
+        repeat_penalty = 0.0
+        if repeat_count > 0:
+            repeat_penalty += self.repeat_action_penalty * repeat_count
+            if marginal <= self.repeat_low_gain_threshold:
+                repeat_penalty += self.repeat_low_gain_penalty * repeat_count
+
+        reward = float(torch.clamp(torch.tensor(base_reward - repeat_penalty), -10.0, 10.0).item())
+        return {
+            "reward": reward,
+            "base_reward": float(base_reward),
+            "marginal": float(marginal),
+            "identity": float(identity),
+            "repeat_penalty": float(repeat_penalty),
+            "consecutive_action_count": float(repeat_count + 1),
+        }
 
     def _calculate_identity_delta(
         self,
@@ -322,13 +374,42 @@ class RestorationTool(BaseTool):
         w_t = torch.tensor(weights, dtype=torch.float32)
         return float(((curr_t - iden_t) * w_t).sum().item())
 
+    def _calculate_stop_reward(
+        self,
+        step: int,
+        identity_delta: float,
+        recent_rewards: list[float],
+    ) -> dict[str, float | bool]:
+        """Reward stopping when quality is good enough or recent gains have plateaued."""
+        recent_reward_mean = float(sum(recent_rewards) / len(recent_rewards)) if recent_rewards else 0.0
+        plateau = bool(recent_rewards) and recent_reward_mean <= self.stop_recent_reward_threshold
+        good_enough = identity_delta >= self.stop_iqa_delta_threshold
+
+        if step < self.stop_min_step:
+            reward = self.stop_early_penalty
+        elif plateau and good_enough:
+            reward = self.stop_success_reward
+        elif plateau or good_enough:
+            reward = self.stop_partial_reward
+        else:
+            reward = self.stop_continue_penalty
+
+        return {
+            "reward": float(torch.clamp(torch.tensor(reward), -10.0, 10.0).item()),
+            "recent_reward_mean": recent_reward_mean,
+            "plateau": plateau,
+            "good_enough": good_enough,
+        }
+
     def _generate_feedback(
         self,
         action: str,
         step: int,
-        curr_scores: list[float],
         reward: float,
         actions_history: list[str],
+        marginal: float,
+        identity_delta: float,
+        consecutive_action_count: int,
     ) -> str:
         """Generate human-readable feedback for the model's next turn."""
         history_str = " → ".join(actions_history) if actions_history else "none"
@@ -336,13 +417,23 @@ class RestorationTool(BaseTool):
         lines = [
             f"Step {step}: Applied '{action}'.",
             f"Step reward: {reward:.4f}",
+            f"Weighted marginal improvement: {marginal:.4f}",
+            f"Improvement over original image: {identity_delta:.4f}",
             f"Action history: {history_str}",
         ]
-        if step >= 4:
+        if consecutive_action_count > 1:
             lines.append(
-                "You have completed 4 or more restoration steps. "
-                "Consider stopping if the image quality is satisfactory, "
-                "or apply one more targeted operation."
+                f"Consecutive uses of '{action}': {consecutive_action_count}. "
+                "Repeating the same tool without clear gains is discouraged."
+            )
+        if step >= self.stop_min_step and marginal <= self.repeat_low_gain_threshold:
+            lines.append(
+                "Recent gains are small. Consider stopping now or switch to a different targeted operation."
+            )
+        elif step >= self.stop_min_step:
+            lines.append(
+                "You have completed several restoration steps. "
+                "If gains keep shrinking, prefer stopping over repeating the same action."
             )
         else:
             lines.append(
@@ -394,6 +485,7 @@ class RestorationTool(BaseTool):
             "actions_history": [],
             "scores_history": [identity_scores],
             "rewards_history": [],
+            "marginals_history": [],
             "identity_scores": identity_scores,
             "weights": weights,
             "step": 0,
@@ -452,23 +544,31 @@ class RestorationTool(BaseTool):
             identity_scores = instance["identity_scores"]
             weights = instance["weights"]
             identity_delta = self._calculate_identity_delta(curr_scores, identity_scores, weights)
-            reward = (
-                STOP_SUCCESS_REWARD
-                if step >= STOP_MIN_STEP and identity_delta > STOP_IQA_DELTA_THRESHOLD
-                else 0.0
-            )
+            recent_rewards = instance["rewards_history"][-self.stop_recent_reward_window :]
+            stop_info = self._calculate_stop_reward(step, identity_delta, recent_rewards)
+            reward = float(stop_info["reward"])
             instance["rewards_history"].append(reward)
             logger.info(
                 f"Instance {instance_id}: stop action at step {step}, "
-                f"identity_delta={identity_delta:.4f}, reward={reward}"
+                f"identity_delta={identity_delta:.4f}, recent_reward_mean={stop_info['recent_reward_mean']:.4f}, "
+                f"plateau={stop_info['plateau']}, good_enough={stop_info['good_enough']}, reward={reward}"
             )
+            reason_parts = []
+            if stop_info["good_enough"]:
+                reason_parts.append("quality is already good enough")
+            if stop_info["plateau"]:
+                reason_parts.append("recent gains are small")
+            reason_text = "; ".join(reason_parts) if reason_parts else "more improvement is still possible"
             return (
-                ToolResponse(text=f"Restoration stopped after {step} step(s)."),
+                ToolResponse(text=f"Restoration stopped after {step} step(s): {reason_text}."),
                 reward,
                 {
                     "action": "stop",
                     "step": step,
                     "identity_delta": identity_delta,
+                    "recent_reward_mean": stop_info["recent_reward_mean"],
+                    "plateau": stop_info["plateau"],
+                    "good_enough": stop_info["good_enough"],
                     "skip_tool_call_reward": True,
                 },
             )
@@ -495,29 +595,42 @@ class RestorationTool(BaseTool):
                     {"error": "restoration_failed", "skip_tool_call_reward": True},
                 )
 
-            # Update instance state
-            instance["processed_images"].append((action, output_path))
-            instance["actions_history"].append(action)
-            instance["current_image"] = output_path
-            instance["step"] += 1
-
             # Compute IQA scores for the new image
             curr_scores = self._get_iqa_scores(output_path)
             prev_scores = instance["scores_history"][-1]
             identity_scores = instance["identity_scores"]
             weights = instance["weights"]
 
-            reward = self._calculate_reward(prev_scores, curr_scores, identity_scores, weights)
+            reward_info = self._calculate_reward(
+                prev_scores,
+                curr_scores,
+                identity_scores,
+                weights,
+                action=action,
+                actions_history=instance["actions_history"],
+            )
+            reward = float(reward_info["reward"])
+
+            # Update instance state
+            instance["processed_images"].append((action, output_path))
+            instance["actions_history"].append(action)
+            instance["current_image"] = output_path
+            instance["step"] += 1
             instance["scores_history"].append(curr_scores)
             instance["rewards_history"].append(reward)
+            instance["marginals_history"].append(float(reward_info["marginal"]))
+
+            identity_delta = self._calculate_identity_delta(curr_scores, identity_scores, weights)
 
             # Generate feedback text
             feedback = self._generate_feedback(
                 action=action,
                 step=instance["step"],
-                curr_scores=curr_scores,
                 reward=reward,
                 actions_history=instance["actions_history"],
+                marginal=float(reward_info["marginal"]),
+                identity_delta=identity_delta,
+                consecutive_action_count=int(reward_info["consecutive_action_count"]),
             )
 
             # Build response with restored image
@@ -535,12 +648,19 @@ class RestorationTool(BaseTool):
 
             logger.info(
                 f"Instance {instance_id}: '{action}' done, step={instance['step']}, "
-                f"reward={reward:.4f}, output={output_path}"
+                f"reward={reward:.4f}, marginal={reward_info['marginal']:.4f}, "
+                f"identity={reward_info['identity']:.4f}, repeat_penalty={reward_info['repeat_penalty']:.4f}, "
+                f"output={output_path}"
             )
             return response, reward, {
                 "action": action,
                 "step": instance["step"],
                 "reward": reward,
+                "base_reward": reward_info["base_reward"],
+                "marginal": reward_info["marginal"],
+                "identity_delta": identity_delta,
+                "repeat_penalty": reward_info["repeat_penalty"],
+                "consecutive_action_count": int(reward_info["consecutive_action_count"]),
                 "iqa_scores": curr_scores,
                 "input_path": current_image,
                 "output_path": output_path,
