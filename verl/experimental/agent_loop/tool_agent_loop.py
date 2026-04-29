@@ -79,6 +79,8 @@ class AgentData:
 
         # Temporary state for tool calls
         self.tool_calls: list[FunctionCall] = []
+        self.tool_instances: dict[str, str] = {}
+        self.tool_instance_lock = asyncio.Lock()
 
         self.routed_experts = None
 
@@ -158,6 +160,35 @@ class ToolAgentLoop(AgentLoopBase):
                 request_id,
             )
 
+    async def _get_or_create_tool_instance(
+        self,
+        tool_name: str,
+        tool: Any,
+        tools_kwargs: dict[str, Any],
+        agent_data: AgentData,
+    ) -> str:
+        async with agent_data.tool_instance_lock:
+            instance_id = agent_data.tool_instances.get(tool_name)
+            if instance_id is not None:
+                return instance_id
+
+            kwargs = tools_kwargs.get(tool_name, {})
+            instance_id, _ = await tool.create(create_kwargs=kwargs.get("create_kwargs", {}))
+            agent_data.tool_instances[tool_name] = instance_id
+            return instance_id
+
+    async def _release_tool_instances(self, agent_data: AgentData) -> None:
+        active_tools = getattr(agent_data, "_active_tools", self.tools)
+        for tool_name, instance_id in list(agent_data.tool_instances.items()):
+            tool = active_tools.get(tool_name)
+            if tool is None:
+                continue
+            try:
+                await tool.release(instance_id)
+            except Exception as e:
+                logger.warning("Error when releasing tool '%s' instance '%s': %s", tool_name, instance_id, e)
+        agent_data.tool_instances.clear()
+
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
@@ -194,75 +225,78 @@ class ToolAgentLoop(AgentLoopBase):
             agent_data._active_tools = self.tools
             agent_data._active_tool_schemas = self.tool_schemas
 
-        # State machine loop
-        state = AgentState.PENDING
-        while state != AgentState.TERMINATED:
-            if state == AgentState.PENDING:
-                state = await self._handle_pending_state(agent_data, sampling_params)
-            elif state == AgentState.GENERATING:
-                state = await self._handle_generating_state(agent_data, sampling_params)
-            elif state == AgentState.PROCESSING_TOOLS:
-                state = await self._handle_processing_tools_state(agent_data)
-            else:
-                logger.error(f"Invalid state: {state}")
-                state = AgentState.TERMINATED
+        try:
+            # State machine loop
+            state = AgentState.PENDING
+            while state != AgentState.TERMINATED:
+                if state == AgentState.PENDING:
+                    state = await self._handle_pending_state(agent_data, sampling_params)
+                elif state == AgentState.GENERATING:
+                    state = await self._handle_generating_state(agent_data, sampling_params)
+                elif state == AgentState.PROCESSING_TOOLS:
+                    state = await self._handle_processing_tools_state(agent_data)
+                else:
+                    logger.error(f"Invalid state: {state}")
+                    state = AgentState.TERMINATED
 
-        # Final reward shaping guardrail for restoration tasks.
-        # This ensures no-tool penalty is applied regardless of how the loop terminated
-        # (e.g., max response length, max turns, or regular stop).
-        if getattr(agent_data, "data_source", "") == "restoration":
-            response_len = len(agent_data.response_ids or [])
-            no_tool_call = agent_data.total_tool_calls == 0
+            # Final reward shaping guardrail for restoration tasks.
+            # This ensures no-tool penalty is applied regardless of how the loop terminated
+            # (e.g., max response length, max turns, or regular stop).
+            if getattr(agent_data, "data_source", "") == "restoration":
+                response_len = len(agent_data.response_ids or [])
+                no_tool_call = agent_data.total_tool_calls == 0
 
-            if no_tool_call and not agent_data.extra_fields.get("no_tool_call_penalty_applied", False):
-                agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
-                agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
-                agent_data.extra_fields["no_tool_call_penalty_applied"] = True
+                if no_tool_call and not agent_data.extra_fields.get("no_tool_call_penalty_applied", False):
+                    agent_data.tool_rewards.append(self.EARLY_STOP_PENALTY)
+                    agent_data.extra_fields["no_tool_call_penalty"] = self.EARLY_STOP_PENALTY
+                    agent_data.extra_fields["no_tool_call_penalty_applied"] = True
 
-            # Penalize length-hacking when no tool was used in the whole trajectory.
-            # The penalty increases linearly after a safe threshold.
-            if len(agent_data.tool_rewards) > 0 and response_len > self.NO_TOOL_LENGTH_THRESHOLD and no_tool_call:
-                denom = max(1, self.response_length - self.NO_TOOL_LENGTH_THRESHOLD)
-                length_ratio = (response_len - self.NO_TOOL_LENGTH_THRESHOLD) / denom
-                length_ratio = max(0.0, min(1.0, float(length_ratio)))
-                no_tool_length_penalty = -self.NO_TOOL_LENGTH_PENALTY_ALPHA * length_ratio
-                agent_data.tool_rewards.append(no_tool_length_penalty)
-                agent_data.extra_fields["no_tool_length_penalty"] = no_tool_length_penalty
+                # Penalize length-hacking when no tool was used in the whole trajectory.
+                # The penalty increases linearly after a safe threshold.
+                if len(agent_data.tool_rewards) > 0 and response_len > self.NO_TOOL_LENGTH_THRESHOLD and no_tool_call:
+                    denom = max(1, self.response_length - self.NO_TOOL_LENGTH_THRESHOLD)
+                    length_ratio = (response_len - self.NO_TOOL_LENGTH_THRESHOLD) / denom
+                    length_ratio = max(0.0, min(1.0, float(length_ratio)))
+                    no_tool_length_penalty = -self.NO_TOOL_LENGTH_PENALTY_ALPHA * length_ratio
+                    agent_data.tool_rewards.append(no_tool_length_penalty)
+                    agent_data.extra_fields["no_tool_length_penalty"] = no_tool_length_penalty
 
-            # Expose decomposed reward parts for easier diagnosis in logs.
-            agent_data.extra_fields["reward_components"] = {
-                "tool_call_reward_per_step": self.TOOL_CALL_REWARD,
-                "early_stop_penalty": self.EARLY_STOP_PENALTY if no_tool_call else 0.0,
-                "no_tool_length_threshold": self.NO_TOOL_LENGTH_THRESHOLD,
-                "no_tool_length_penalty_alpha": self.NO_TOOL_LENGTH_PENALTY_ALPHA,
-                "response_length": response_len,
-                "tool_reward_sum": float(sum(agent_data.tool_rewards)) if agent_data.tool_rewards else 0.0,
-            }
+                # Expose decomposed reward parts for easier diagnosis in logs.
+                agent_data.extra_fields["reward_components"] = {
+                    "tool_call_reward_per_step": self.TOOL_CALL_REWARD,
+                    "early_stop_penalty": self.EARLY_STOP_PENALTY if no_tool_call else 0.0,
+                    "no_tool_length_threshold": self.NO_TOOL_LENGTH_THRESHOLD,
+                    "no_tool_length_penalty_alpha": self.NO_TOOL_LENGTH_PENALTY_ALPHA,
+                    "response_length": response_len,
+                    "tool_reward_sum": float(sum(agent_data.tool_rewards)) if agent_data.tool_rewards else 0.0,
+                }
 
-        # Finalize output
-        response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
-        prompt_ids = agent_data.prompt_ids[: len(agent_data.prompt_ids) - len(agent_data.response_mask)]
-        multi_modal_data = {}
-        if agent_data.image_data is not None:
-            multi_modal_data["images"] = agent_data.image_data
-        if agent_data.video_data is not None:
-            multi_modal_data["videos"] = agent_data.video_data
+            # Finalize output
+            response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
+            prompt_ids = agent_data.prompt_ids[: len(agent_data.prompt_ids) - len(agent_data.response_mask)]
+            multi_modal_data = {}
+            if agent_data.image_data is not None:
+                multi_modal_data["images"] = agent_data.image_data
+            if agent_data.video_data is not None:
+                multi_modal_data["videos"] = agent_data.video_data
 
-        output: AgentLoopOutput = AgentLoopOutput(
-            prompt_ids=prompt_ids,
-            response_ids=response_ids[: self.response_length],
-            response_mask=agent_data.response_mask[: self.response_length],
-            multi_modal_data=multi_modal_data,
-            response_logprobs=agent_data.response_logprobs[: self.response_length]
-            if agent_data.response_logprobs
-            else None,
-            num_turns=agent_data.user_turns + agent_data.assistant_turns + 1,
-            metrics=agent_data.metrics,
-            routed_experts=agent_data.routed_experts,
-            extra_fields=agent_data.extra_fields,
-        )
-        output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
-        return output
+            output: AgentLoopOutput = AgentLoopOutput(
+                prompt_ids=prompt_ids,
+                response_ids=response_ids[: self.response_length],
+                response_mask=agent_data.response_mask[: self.response_length],
+                multi_modal_data=multi_modal_data,
+                response_logprobs=agent_data.response_logprobs[: self.response_length]
+                if agent_data.response_logprobs
+                else None,
+                num_turns=agent_data.user_turns + agent_data.assistant_turns + 1,
+                metrics=agent_data.metrics,
+                routed_experts=agent_data.routed_experts,
+                extra_fields=agent_data.extra_fields,
+            )
+            output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
+            return output
+        finally:
+            await self._release_tool_instances(agent_data)
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
@@ -473,15 +507,13 @@ class ToolAgentLoop(AgentLoopBase):
         self, tool_call: FunctionCall, tools_kwargs: dict[str, Any], agent_data: AgentData
     ) -> tuple[ToolResponse, float, dict]:
         """Call tool and return tool response."""
-        tool, instance_id = None, None
         active_tools = getattr(agent_data, "_active_tools", self.tools)
         try:
             # TODO: append malformed tool_call to the prompt: invalid function name or arguments
             tool_name = tool_call.name
             tool_args = json.loads(tool_call.arguments)
             tool = active_tools[tool_name]
-            kwargs = tools_kwargs.get(tool_name, {})
-            instance_id, _ = await tool.create(create_kwargs=kwargs.get("create_kwargs", {}))
+            instance_id = await self._get_or_create_tool_instance(tool_name, tool, tools_kwargs, agent_data)
             tool_execution_response, tool_reward, res = await tool.execute(
                 instance_id, tool_args, agent_data=agent_data
             )
@@ -503,9 +535,6 @@ class ToolAgentLoop(AgentLoopBase):
                 0.0,
                 {},
             )
-        finally:
-            if tool and instance_id:
-                await tool.release(instance_id)
 
         tool_response_text = tool_execution_response.text
         if tool_response_text and len(tool_response_text) > self.max_tool_response_length:

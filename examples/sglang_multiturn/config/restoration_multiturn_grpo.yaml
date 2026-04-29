@@ -58,6 +58,9 @@ actor_rollout_ref:
     entropy_coeff: 0.01
     use_kl_loss: true
     kl_loss_coef: 0.1
+    use_dynamic_bsz: true
+    # Dynamic batch token budget per GPU (start conservative for 4-GPU + tool-sharing setup)
+    ppo_max_token_len_per_gpu: 12288
     fsdp_config:
       # Use bf16 to match Flash Attention 2 requirements and reduce memory pressure
       model_dtype: bfloat16
@@ -77,7 +80,9 @@ actor_rollout_ref:
     tensor_model_parallel_size: 2
     # SGLang uses all 4 GPUs (0-3); restoration/IQA models use GPU 3's remaining VRAM
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.45
+    gpu_memory_utilization: 0.575
+    log_prob_use_dynamic_bsz: true
+    log_prob_max_token_len_per_gpu: 12288
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
@@ -96,6 +101,8 @@ actor_rollout_ref:
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
 
   ref:
+    log_prob_use_dynamic_bsz: true
+    log_prob_max_token_len_per_gpu: 12288
     log_prob_micro_batch_size_per_gpu: 2
 
 # ---------------------------------------------------------------------------
@@ -107,16 +114,16 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
-  log_val_generations: 10
+  log_val_generations: 5
   # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models use GPU 3's remaining VRAM
   # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 30
-  test_freq: 30
+  save_freq: 10
+  test_freq: 10
   total_epochs: 3
   max_actor_ckpt_to_keep: 6
-  val_before_train: false
+  val_before_train: true
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
   ray_kwargs:
