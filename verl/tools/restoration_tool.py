@@ -44,6 +44,7 @@ Supported restoration actions:
 - snowmaster: Advanced desnowing
 """
 
+import json
 import logging
 import os
 import sys
@@ -98,7 +99,8 @@ ALLOWED_ACTIONS = {
     'turbo_rain', 's2former', 'idt', 'ridcp', 'kanet', 'turbo_snow', 'snowmaster', 'stop',
 }
 
-# IQA metric weights per degradation type (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE)
+# Legacy IQA metric weights per degradation type (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE).
+# Prefer loading a data-driven map from local training data via ``iqa_weight_map_path``.
 SCORE_WEIGHT_MAP: dict[str, list[float]] = {
     'night':       [2./9,    2./9,    0.,      2./9,    3./9   ],
     'rain_streak': [1./5,    1.25/5,  1./5,    0.75/5,  1./5   ],
@@ -123,7 +125,36 @@ STOP_RECENT_REWARD_THRESHOLD = 0.25
 
 # Module-level caches
 _toolkit_instance = None
-_iqa_instance = None
+_iqa_instances: dict[tuple[str, bool, str | None, str | None], Any] = {}
+
+
+def _normalize_score_weight_vector(weights: list[float]) -> list[float]:
+    if len(weights) != 5:
+        raise ValueError(f"Expected 5 IQA weights, got {len(weights)}")
+    tensor = torch.tensor(weights, dtype=torch.float32)
+    tensor = torch.clamp(tensor, min=0.0)
+    total = float(tensor.sum().item())
+    if total <= 0.0:
+        return list(DEFAULT_WEIGHT)
+    return [float(value) for value in (tensor / total).tolist()]
+
+
+def _load_score_weight_map(weight_map_path: str) -> dict[str, list[float]]:
+    with open(weight_map_path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+
+    weights_payload = payload.get('weights', payload)
+    if not isinstance(weights_payload, dict):
+        raise ValueError(f"Invalid weight map payload in {weight_map_path}")
+
+    normalized_map = {}
+    for degradation_type, weights in weights_payload.items():
+        if not isinstance(weights, list):
+            raise ValueError(
+                f"Weight entry for degradation '{degradation_type}' must be a list, got {type(weights)}"
+            )
+        normalized_map[degradation_type] = _normalize_score_weight_vector(weights)
+    return normalized_map
 
 
 def get_toolkit(
@@ -158,19 +189,33 @@ def get_toolkit(
     return _toolkit_instance
 
 
-def get_iqa_scorer(device: str = 'cuda'):
+def get_iqa_scorer(
+    device: str = 'cuda',
+    normalize_scores: bool = False,
+    normalization_stats_path: str | None = None,
+    qalign_path: str | None = None,
+):
     """Lazy load and cache the IQAScore instance."""
-    global _iqa_instance
-    if _iqa_instance is None:
+    global _iqa_instances
+    cache_key = (str(device), normalize_scores, normalization_stats_path, qalign_path)
+    if cache_key not in _iqa_instances:
         try:
             from iqa_reward import IQAScore
 
-            _iqa_instance = IQAScore(device=device)
-            logger.info(f"IQAScore initialized on {device}")
+            _iqa_instances[cache_key] = IQAScore(
+                device=device,
+                qalign_path=qalign_path,
+                normalize_scores=normalize_scores,
+                normalization_stats_path=normalization_stats_path,
+            )
+            logger.info(
+                f"IQAScore initialized on {device} "
+                f"(normalize_scores={normalize_scores}, stats_path={normalization_stats_path})"
+            )
         except Exception as e:
             logger.error(f"Failed to initialize IQAScore: {e}")
             raise
-    return _iqa_instance
+    return _iqa_instances[cache_key]
 
 
 def _load_restoration_tool_runtime_config(tool_config_path: str) -> dict[str, Any] | None:
@@ -253,6 +298,10 @@ class RestorationTool(BaseTool):
             )
         self.auto_unload = False
         self.use_iqa = config.get("use_iqa", True)
+        self.normalize_iqa_scores = bool(config.get("normalize_iqa_scores", False))
+        self.iqa_stats_path = config.get("iqa_stats_path", None)
+        self.iqa_qalign_path = config.get("iqa_qalign_path", None)
+        self.iqa_weight_map_path = config.get("iqa_weight_map_path", None)
         self.alpha = float(config.get("alpha", 0.9))       # marginal-improvement weight
         self.beta = 1.0 - self.alpha                       # identity-improvement weight
         self.reward_scale = float(config.get("reward_scale", 1.0))
@@ -270,17 +319,35 @@ class RestorationTool(BaseTool):
             config.get("stop_recent_reward_threshold", STOP_RECENT_REWARD_THRESHOLD)
         )
 
+        project_root = Path(__file__).resolve().parent.parent.parent
+        if self.iqa_stats_path and not os.path.isabs(self.iqa_stats_path):
+            self.iqa_stats_path = str((project_root / self.iqa_stats_path).resolve())
+        if self.iqa_qalign_path and not os.path.isabs(self.iqa_qalign_path):
+            self.iqa_qalign_path = str((project_root / self.iqa_qalign_path).resolve())
+        if self.iqa_weight_map_path and not os.path.isabs(self.iqa_weight_map_path):
+            self.iqa_weight_map_path = str((project_root / self.iqa_weight_map_path).resolve())
+        if self.normalize_iqa_scores and not self.iqa_stats_path:
+            raise ValueError(
+                "normalize_iqa_scores=true requires iqa_stats_path generated from local training data"
+            )
+
+        self.score_weight_map = dict(SCORE_WEIGHT_MAP)
+        if self.iqa_weight_map_path:
+            self.score_weight_map = _load_score_weight_map(self.iqa_weight_map_path)
+
         os.makedirs(self.output_dir, exist_ok=True)
         self._toolkit = None
         self._iqa = None
 
         logger.info(
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
-            f"use_iqa={self.use_iqa}, alpha={self.alpha}, reward_scale={self.reward_scale}, "
+            f"use_iqa={self.use_iqa}, normalize_iqa_scores={self.normalize_iqa_scores}, "
+            f"alpha={self.alpha}, reward_scale={self.reward_scale}, "
             f"repeat_action_penalty={self.repeat_action_penalty}, "
             f"repeat_low_gain_penalty={self.repeat_low_gain_penalty}, "
             f"stop_min_step={self.stop_min_step}, "
-            f"model_devices={self.model_devices}"
+            f"model_devices={self.model_devices}, "
+            f"weight_map_path={self.iqa_weight_map_path}"
         )
 
     @property
@@ -299,7 +366,12 @@ class RestorationTool(BaseTool):
     @property
     def iqa(self):
         if self._iqa is None and self.use_iqa:
-            self._iqa = get_iqa_scorer(device=self.iqa_device)
+            self._iqa = get_iqa_scorer(
+                device=self.iqa_device,
+                normalize_scores=self.normalize_iqa_scores,
+                normalization_stats_path=self.iqa_stats_path,
+                qalign_path=self.iqa_qalign_path,
+            )
         return self._iqa
 
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
@@ -473,7 +545,7 @@ class RestorationTool(BaseTool):
         instance_output_dir = os.path.join(self.output_dir, instance_id)
         os.makedirs(instance_output_dir, exist_ok=True)
 
-        weights = SCORE_WEIGHT_MAP.get(degradation_type, DEFAULT_WEIGHT)
+        weights = self.score_weight_map.get(degradation_type, DEFAULT_WEIGHT)
 
         # Compute identity (original) IQA scores
         identity_scores = self._get_iqa_scores(original_image) if original_image else [0.0] * 5

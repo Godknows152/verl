@@ -35,22 +35,32 @@ tools:
       # This means gpu3 is usually the first shared-memory bottleneck during rollout.
       use_iqa: true
       iqa_device: cuda:3
+      # Compute frozen local dataset stats first:
+      # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet
+      normalize_iqa_scores: true
+      iqa_stats_path: data/restoration/iqa_stats.json
+      # Optional data-driven metric weights generated from local training data.
+      # Without this file, the tool falls back to the legacy hard-coded map.
+      iqa_weight_map_path: data/restoration/iqa_weight_map.json
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
+      # All thresholds below are interpreted in normalized IQA space.
       alpha: 0.9
-      reward_scale: 5.0
-      # Penalize repeating the same tool when gains are already small.
-      repeat_action_penalty: 0.2
-      repeat_low_gain_penalty: 0.8
-      repeat_low_gain_threshold: 0.05
-      # Reward stopping once quality is good enough or recent rewards plateau.
-      stop_min_step: 3
-      stop_iqa_delta_threshold: 0.25
-      stop_success_reward: 3.0
-      stop_partial_reward: 1.0
-      stop_early_penalty: -1.0
-      stop_continue_penalty: -0.5
+      reward_scale: 4.0
+      # Penalize repeating the same tool when weighted z-score gains are already small.
+      repeat_action_penalty: 0.25
+      repeat_low_gain_penalty: 0.75
+      # ~0.1 means the weighted marginal gain is already close to a plateau.
+      repeat_low_gain_threshold: 0.12
+      # Reward stopping once normalized quality is good enough or recent rewards plateau.
+      stop_min_step: 4
+      # ~0.6 means the weighted improvement over the original image is materially positive.
+      stop_iqa_delta_threshold: 0.6
+      stop_success_reward: 1.8
+      stop_partial_reward: 0.6
+      stop_early_penalty: -1.2
+      stop_continue_penalty: -0.4
       stop_recent_reward_window: 2
-      stop_recent_reward_threshold: 0.25
+      stop_recent_reward_threshold: 0.2
     tool_schema:
       type: "function"
       function:

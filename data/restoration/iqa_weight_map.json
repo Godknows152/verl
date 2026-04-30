@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "method": "positive_deficit_x_reliability_with_uniform_shrinkage",
+  "normalization_stats_path": "/home/LXJ/Python_Projects/verl/data/restoration/iqa_stats.json",
+  "metric_order": [
+    "qalign",
+    "maniqa",
+    "musiq",
+    "clipiqa",
+    "niqe"
+  ],
+  "uniform_mix": 0.2,
+  "default_weight": [
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2
+  ],
+  "weights": {
+    "night": [
+      0.256632276252338,
+      0.1868186580258967,
+      0.2386973805141491,
+      0.15910710325789407,
+      0.15874458194972224
+    ],
+    "rain_drive": [
+      0.04,
+      0.2119554682317617,
+      0.04,
+      0.6680445317682383,
+      0.04
+    ],
+    "rain_drop": [
+      0.04000000000000001,
+      0.04000000000000001,
+      0.04000000000000001,
+      0.04000000000000001,
+      0.8400000000000001
+    ],
+    "rain_streak": [
+      0.19999999999999998,
+      0.19999999999999998,
+      0.19999999999999998,
+      0.19999999999999998,
+      0.19999999999999998
+    ]
+  },
+  "details": {
+    "night": {
+      "sample_count": 128,
+      "metrics": {
+        "qalign": {
+          "mean_z": -1.2087481693999351,
+          "std_z": 0.8987457662771183,
+          "deficit": 1.2087481693999351,
+          "reliability": 0.5266634521380426,
+          "signal": 0.6366034836617093,
+          "data_weight": 0.27079034531542245,
+          "final_weight": 0.256632276252338
+        },
+        "maniqa": {
+          "mean_z": -0.7780110792628103,
+          "std_z": 0.8032613884759536,
+          "deficit": 0.7780110792628103,
+          "reliability": 0.5545507747188893,
+          "signal": 0.4314466467450706,
+          "data_weight": 0.18352332253237086,
+          "final_weight": 0.1868186580258967
+        },
+        "musiq": {
+          "mean_z": -1.1742965701254822,
+          "std_z": 1.0111284184174627,
+          "deficit": 1.1742965701254822,
+          "reliability": 0.497233289949177,
+          "signal": 0.5838993469395279,
+          "data_weight": 0.24837172564268636,
+          "final_weight": 0.2386973805141491
+        },
+        "clipiqa": {
+          "mean_z": -0.6185050880790275,
+          "std_z": 0.7670944641259725,
+          "deficit": 0.6185050880790275,
+          "reliability": 0.5659007032737283,
+          "signal": 0.35001246432230093,
+          "data_weight": 0.14888387907236755,
+          "final_weight": 0.15910710325789407
+        },
+        "niqe": {
+          "mean_z": -0.711839548964001,
+          "std_z": 1.0399638084819312,
+          "deficit": 0.711839548964001,
+          "reliability": 0.4902047751249884,
+          "signal": 0.3489471460249713,
+          "data_weight": 0.14843072743715277,
+          "final_weight": 0.15874458194972224
+        }
+      }
+    },
+    "rain_drive": {
+      "sample_count": 128,
+      "metrics": {
+        "qalign": {
+          "mean_z": 0.19201428159801928,
+          "std_z": 0.5046896798324731,
+          "deficit": 0.0,
+          "reliability": 0.6645888606821152,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04
+        },
+        "maniqa": {
+          "mean_z": -0.27250348996929524,
+          "std_z": 0.9019030464156681,
+          "deficit": 0.27250348996929524,
+          "reliability": 0.5257891572783391,
+          "signal": 0.14327938034636206,
+          "data_weight": 0.21494433528970217,
+          "final_weight": 0.2119554682317617
+        },
+        "musiq": {
+          "mean_z": 0.2827999012674201,
+          "std_z": 0.9242719527750256,
+          "deficit": 0.0,
+          "reliability": 0.5196770646466488,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04
+        },
+        "clipiqa": {
+          "mean_z": -0.7631599546022183,
+          "std_z": 0.45833544428876544,
+          "deficit": 0.7631599546022183,
+          "reliability": 0.6857132931358622,
+          "signal": 0.5233089256597022,
+          "data_weight": 0.7850556647102979,
+          "final_weight": 0.6680445317682383
+        },
+        "niqe": {
+          "mean_z": 0.7212997773466909,
+          "std_z": 0.5328188204771361,
+          "deficit": 0.0,
+          "reliability": 0.652392824671033,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04
+        }
+      }
+    },
+    "rain_drop": {
+      "sample_count": 128,
+      "metrics": {
+        "qalign": {
+          "mean_z": 0.39401596281955803,
+          "std_z": 0.5138025578116459,
+          "deficit": 0.0,
+          "reliability": 0.6605881294358498,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04000000000000001
+        },
+        "maniqa": {
+          "mean_z": 1.0493190979917484,
+          "std_z": 0.6888097438873595,
+          "deficit": 0.0,
+          "reliability": 0.5921330117969157,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04000000000000001
+        },
+        "musiq": {
+          "mean_z": 0.40460945322072533,
+          "std_z": 0.4775847770231919,
+          "deficit": 0.0,
+          "reliability": 0.6767801181700346,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04000000000000001
+        },
+        "clipiqa": {
+          "mean_z": 0.8803517721551368,
+          "std_z": 0.7013503432401321,
+          "deficit": 0.0,
+          "reliability": 0.5877684181704473,
+          "signal": 0.0,
+          "data_weight": 0.0,
+          "final_weight": 0.04000000000000001
+        },
+        "niqe": {
+          "mean_z": -0.97755515138724,
+          "std_z": 0.8908143412268348,
+          "deficit": 0.97755515138724,
+          "reliability": 0.5288726545997957,
+          "signal": 0.5170021879318748,
+          "data_weight": 1.0,
+          "final_weight": 0.8400000000000001
+        }
+      }
+    },
+    "rain_streak": {
+      "sample_count": 128,
+      "metrics": {
+        "qalign": {
+          "mean_z": 0.40153616633655465,
+          "std_z": 1.037245015849186,
+          "deficit": 0.0,
+          "reliability": 0.49085897485098007,
+          "signal": 0.0,
+          "data_weight": 0.2,
+          "final_weight": 0.19999999999999998
+        },
+        "maniqa": {
+          "mean_z": 0.16045812564940531,
+          "std_z": 0.9812364965474787,
+          "deficit": 0.0,
+          "reliability": 0.504735301284127,
+          "signal": 0.0,
+          "data_weight": 0.2,
+          "final_weight": 0.19999999999999998
+        },
+        "musiq": {
+          "mean_z": 0.24062851787084769,
+          "std_z": 0.9043711249707747,
+          "deficit": 0.0,
+          "reliability": 0.5251077307819118,
+          "signal": 0.0,
+          "data_weight": 0.2,
+          "final_weight": 0.19999999999999998
+        },
+        "clipiqa": {
+          "mean_z": 0.46847181105924984,
+          "std_z": 1.0423544160648823,
+          "deficit": 0.0,
+          "reliability": 0.48963098281774003,
+          "signal": 0.0,
+          "data_weight": 0.2,
+          "final_weight": 0.19999999999999998
+        },
+        "niqe": {
+          "mean_z": 0.2629150473812156,
+          "std_z": 1.0686396244411918,
+          "deficit": 0.0,
+          "reliability": 0.4834094775063265,
+          "signal": 0.0,
+          "data_weight": 0.2,
+          "final_weight": 0.19999999999999998
+        }
+      }
+    }
+  },
+  "source": {
+    "parquet": [
+      "data/restoration/train.parquet"
+    ],
+    "max_samples": 512,
+    "device": "cuda:3",
+    "total_images": 512
+  }
+}
