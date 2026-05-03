@@ -47,8 +47,8 @@ tools:
       alpha: 0.9
       reward_scale: 4.0
       # Penalize repeating the same tool when weighted z-score gains are already small.
-      repeat_action_penalty: 0.25
-      repeat_low_gain_penalty: 0.75
+      repeat_action_penalty: 0.75
+      repeat_low_gain_penalty: 2.0
       # ~0.1 means the weighted marginal gain is already close to a plateau.
       repeat_low_gain_threshold: 0.12
       # Reward stopping once normalized quality is good enough or recent rewards plateau.

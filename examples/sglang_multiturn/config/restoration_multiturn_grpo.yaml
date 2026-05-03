@@ -23,7 +23,7 @@ defaults:
 data:
   # Update these paths after running convert_restoration_dataset.py
   train_files:
-    - data/restoration/test.parquet
+    - data/restoration/train.parquet
   val_files:
     - data/restoration/test.parquet
   val_max_samples: 8
@@ -50,7 +50,7 @@ algorithm:
 actor_rollout_ref:
   model:
     # Update to your actual Qwen3-VL checkpoint path
-    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/qwen3-vl-8b-restore/merged
+    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
 
   actor:
     optim:
@@ -63,8 +63,8 @@ actor_rollout_ref:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 16
-    ppo_micro_batch_size_per_gpu: 8
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 4
 
   rollout:
     name: sglang
@@ -81,7 +81,7 @@ actor_rollout_ref:
     # with GPU 3 typically the tightest due to IQA placement.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
     gpu_memory_utilization: 0.575
-    log_prob_micro_batch_size_per_gpu: 8
+    log_prob_micro_batch_size_per_gpu: 4
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
@@ -92,8 +92,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 6
-      max_assistant_turns: 7
+      max_user_turns: 7
+      max_assistant_turns: 6
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
@@ -121,10 +121,10 @@ trainer:
   # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 10
+  save_freq: 3
   test_freq: 10
-  total_epochs: 3
-  max_actor_ckpt_to_keep: 6
+  total_epochs: 1
+  max_actor_ckpt_to_keep: 10
   val_before_train: false
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
   # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
