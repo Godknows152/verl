@@ -77,8 +77,8 @@ actor_rollout_ref:
     # TP=1 gives each rollout shard a full model replica on one GPU and maximizes
     # rollout-side parallelism, but it also increases per-GPU memory pressure.
     tensor_model_parallel_size: 1
-    # SGLang uses all 4 GPUs (0-3); restoration/IQA models still share residual VRAM,
-    # with GPU 3 typically the tightest due to IQA placement.
+    # SGLang uses 3 GPUs (0-2); restoration/IQA models still share residual VRAM,
+    # with GPU 2 typically the tightest due to IQA placement.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
     gpu_memory_utilization: 0.575
     log_prob_micro_batch_size_per_gpu: 4
@@ -86,7 +86,7 @@ actor_rollout_ref:
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
       num_workers: 1
-      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 3's remaining VRAM
+      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 2's remaining VRAM
       num_gpus_per_worker: 0.0
       default_agent_loop: tool_agent
 
@@ -116,14 +116,14 @@ trainer:
   resume_mode: auto
   default_local_dir: checkpoints/verl/multiturn_grpo_0429
   log_val_generations: 5
-  # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models share remaining VRAM,
-  # with GPU 3 usually the first pressure point because IQA is pinned there.
-  # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
-  n_gpus_per_node: 4
+  # Use 3 GPUs for rollout (GPUs 0-2); restoration/IQA models share remaining VRAM,
+  # with GPU 2 usually the first pressure point because IQA is pinned there.
+  # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 2 directly without Ray GPU allocation)
+  n_gpus_per_node: 3
   nnodes: 1
   save_freq: 3
   test_freq: 10
-  total_epochs: 1
+  total_epochs: 3
   max_actor_ckpt_to_keep: 10
   val_before_train: false
   # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime

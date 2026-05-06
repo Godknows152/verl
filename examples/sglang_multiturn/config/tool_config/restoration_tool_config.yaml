@@ -22,8 +22,8 @@ tools:
       type: native
       # Base device fallback. Actual restoration models are distributed across model_devices.
       device: cuda:0
-      # Distribute restoration models across the first 3 GPUs.
-      # IQA stays pinned to gpu3, but rollout may also use gpu3 when TP=1.
+      # Distribute restoration models across the first 3 GPUs (0-2).
+      # IQA stays pinned to gpu2, which is also used by rollout (TP=1) — gpu2 is typically the tightest.
       model_devices: [cuda:0, cuda:1, cuda:2]
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
@@ -31,10 +31,10 @@ tools:
       # and unload all models once after sampling finishes.
       preload: false
       auto_unload: false
-      # IQA reward computation settings: pin IQA to gpu3.
-      # This means gpu3 is usually the first shared-memory bottleneck during rollout.
+      # IQA reward computation settings: pin IQA to gpu2.
+      # gpu2 is shared by SGLang rollout + restoration models + IQA, making it the tightest GPU.
       use_iqa: true
-      iqa_device: cuda:3
+      iqa_device: cuda:2
       # Compute frozen local dataset stats first:
       # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet
       normalize_iqa_scores: true
