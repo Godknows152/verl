@@ -37,6 +37,7 @@ export SGLANG_DISABLE_CUDNN_CHECK=1
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/examples/sglang_multiturn/config"
 LOG_DIR="/home/LXJ/Python_Projects/verl/log"
+PYTHON_BIN="${PYTHON:-/home/LXJ/anaconda3/envs/verl/bin/python}"
 
 # Expose LOG_DIR to restoration_tool.py file handler so INFO logs land next to training logs
 export VERL_LOG_DIR="$LOG_DIR"
@@ -54,6 +55,10 @@ VAL_FILES="${VAL_FILES:-$PROJECT_DIR/data/restoration/test.parquet}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_restoration.log"
 
+# 清空上次训练残留的 restoration tool 日志
+> "$LOG_DIR/restoration_tool_info.log"
+> "$LOG_DIR/restoration_tools.log"
+
 # ---------------------------------------------------------------------------
 # Unbuffered Python output - critical for seeing errors in real time
 # ---------------------------------------------------------------------------
@@ -63,7 +68,7 @@ export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 # ---------------------------------------------------------------------------
 # Launch training (use -u for unbuffered output)
 # ---------------------------------------------------------------------------
-python3 -u -m verl.trainer.main_ppo \
+"$PYTHON_BIN" -u -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='restoration_multiturn_grpo' \
     data.train_files="$TRAIN_FILES" \

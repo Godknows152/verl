@@ -1,7 +1,13 @@
-# Image Restoration Tool Configuration for verl multi-turn rollout
+# Image Restoration Tool Configuration — 3-GPU variant
 #
-# This file configures the RestorationTool that wraps the restoration models
-# located in restoration_tools/agent_tools/.
+# 与 restoration_tool_config.yaml 的唯一区别：
+#   iqa_device: cuda:3 → cuda:2（3 卡训练时 GPU 3 不存在）
+#
+# GPU 分配说明（3 卡版本）：
+#   GPU 0-2: SGLang rollout (TP=1, 每卡一个副本)
+#   GPU 0-2: 修复模型按 round-robin 分布（model_devices）
+#   GPU 2:   IQA 模型（iqa_device）
+#   => GPU 2 同时承载 SGLang + 修复模型 + IQA，显存最为紧张
 #
 # GPU memory management strategy:
 #   To avoid conflicts with SGLang's memory_saver (which can cause
@@ -14,7 +20,7 @@
 #   actor_rollout_ref:
 #     rollout:
 #       multi_turn:
-#         tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
+#         tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml
 
 tools:
   - class_name: "verl.tools.restoration_tool.RestorationTool"
@@ -22,19 +28,20 @@ tools:
       type: native
       # Base device fallback. Actual restoration models are distributed across model_devices.
       device: cuda:0
-      # Distribute restoration models across the first 3 GPUs.
-      # IQA stays pinned to gpu3, but rollout may also use gpu3 when TP=1.
-      model_devices: [cuda:0, cuda:1, cuda:2]
+      # Distribute restoration models across GPU 0-1 only.
+      # GPU 2 is excluded from model_devices: it already hosts SGLang rollout + IQA,
+      # and cannot absorb additional restoration model memory (~3 GiB per model load).
+      model_devices: [cuda:0, cuda:1]
       # Directory for intermediate output images
       output_dir: /tmp/verl_restoration
       # Use phase-managed loading: preload all models at sampling start,
       # and unload all models once after sampling finishes.
       preload: false
       auto_unload: false
-      # IQA reward computation settings: pin IQA to gpu3.
-      # This means gpu3 is usually the first shared-memory bottleneck during rollout.
+      # IQA reward computation settings: pin IQA to gpu2.
+      # gpu2 is shared by SGLang rollout + restoration models + IQA, making it the tightest GPU.
       use_iqa: true
-      iqa_device: cuda:3
+      iqa_device: cuda:2
       # Compute frozen local dataset stats first:
       # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet
       normalize_iqa_scores: true

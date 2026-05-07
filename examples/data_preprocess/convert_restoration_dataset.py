@@ -28,14 +28,16 @@ from PIL import Image
 
 
 # 退化类型关键词映射
+# 注意顺序：fog/snow/rain 子类必须在 'rain' 兜底之前检查，
+# 否则路径中的 /train/ 目录名会被 'rain' 误匹配。
 _DEGRADATION_KEYWORDS = {
-    'night': ['night', 'dark', 'low_light', 'lowlight', 'lol'],
-    'rain_drop': ['rain_drop', 'raindrop', 'drop'],
+    'night':       ['night', 'dark', 'low_light', 'lowlight', 'lol'],
+    'rain_drop':   ['rain_drop', 'raindrop'],
     'rain_streak': ['rain_streak', 'rainstreak', 'streak'],
-    'rain_drive': ['rain_drive', 'driving', 'drive'],
-    'rain': ['rain'],     # 兜底 rain -> rain_streak
-    'snow': ['snow'],
-    'fog': ['fog', 'haze', 'hazy'],
+    'rain_drive':  ['rain_drive', 'driving', 'drive'],
+    'snow':        ['snow'],
+    'fog':         ['fog', 'haze', 'hazy'],
+    'rain':        ['rain_series', '/rain/'],  # 兜底：仅匹配实际 rain 目录，避免误匹配 /train/
 }
 
 
