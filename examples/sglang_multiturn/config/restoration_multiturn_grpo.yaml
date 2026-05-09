@@ -111,11 +111,10 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
-  # Resume from the last saved checkpoint automatically.
-  # "auto" reads latest_checkpointed_iteration.txt under default_local_dir
-  # and restores actor weights, optimizer state, and dataloader position.
-  resume_mode: auto
-  default_local_dir: checkpoints/verl/multiturn_grpo_0429
+  # Resume from a specific checkpoint and keep subsequent saves in the same run directory.
+  resume_mode: resume_path
+  resume_from_path: checkpoints/verl/multiturn_grpo_0508/global_step_9
+  default_local_dir: checkpoints/verl/multiturn_grpo_0508
   log_val_generations: 5
   # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models share remaining VRAM,
   # with GPU 3 usually the first pressure point because IQA is pinned there.

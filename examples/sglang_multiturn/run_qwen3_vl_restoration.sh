@@ -59,6 +59,10 @@ LOG_FILE="$LOG_DIR/$(date +%Y%m%d_%H%M%S)_restoration.log"
 > "$LOG_DIR/restoration_tool_info.log"
 > "$LOG_DIR/restoration_tools.log"
 
+# 清空上次训练残留的临时修复图片
+rm -rf /home/LXJ/tmp/verl_restoration
+mkdir -p /home/LXJ/tmp/verl_restoration
+
 # ---------------------------------------------------------------------------
 # Unbuffered Python output - critical for seeing errors in real time
 # ---------------------------------------------------------------------------
@@ -74,5 +78,5 @@ export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \
     trainer.experiment_name="multiturn_grpo_$(date +%m%d)" \
-    trainer.default_local_dir="multiturn_grpo_$(date +%m%d)" \
+    trainer.default_local_dir="checkpoints/multiturn_grpo_$(date +%m%d)" \
     "$@" 2>&1 | tee "$LOG_FILE"
