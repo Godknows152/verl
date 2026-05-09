@@ -1089,6 +1089,23 @@ def test_serialize_deserialize_tensordict_nested_tensors():
         assert orig.dtype == recon.dtype
 
 
+def test_serialize_deserialize_tensordict_equal_length_3d_position_ids():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    position_ids = torch.nested.as_nested_tensor(position_id_list, layout=torch.jagged)
+    original_tensordict = TensorDict({"position_ids": position_ids}, batch_size=(4,))
+
+    batch_size_serialized, device, encoded_items = serialize_tensordict(original_tensordict)
+    reconstructed_tensordict = deserialize_tensordict((batch_size_serialized, device, encoded_items))
+    reconstructed_position_ids = reconstructed_tensordict["position_ids"]
+
+    assert reconstructed_position_ids.is_nested
+    assert reconstructed_position_ids.dim() == 3
+    assert reconstructed_position_ids.shape[1] == 4
+    assert reconstructed_position_ids.values().shape == (4, 20)
+    for actual, expected in zip(reconstructed_position_ids.unbind(0), position_id_list, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
 def test_serialize_deserialize_tensordict_mixed_types():
     """Test serialization and deserialization of TensorDict with mixed tensor types"""
     # Create tensors with different data types

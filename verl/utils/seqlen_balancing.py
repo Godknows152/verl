@@ -544,7 +544,7 @@ def restore_dynamic_batch(data: torch.Tensor, batch_idx_list: list[list[int]]) -
     if data.is_nested:
         data_lst = data.unbind()
         tensors = [data_lst[i] for i in revert_indices]
-        reverted_data = torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
+        reverted_data = tu.reconstruct_nested_tensor(tensors, jagged_dim=getattr(data, "_ragged_idx", None))
     else:
         reverted_data = data[revert_indices]
 

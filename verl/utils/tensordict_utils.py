@@ -159,7 +159,56 @@ def get_non_tensor_data(data: TensorDict, key: str, default):
     return unwrap_non_tensor_data(output)
 
 
-def concat_nested_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
+def _can_reconstruct_with_trailing_jagged_dim(tensors: Iterable[torch.Tensor]) -> bool:
+    tensors = list(tensors)
+    if not tensors or tensors[0].dim() < 2:
+        return False
+
+    prefix_shape = tensors[0].shape[:-1]
+    return all(tensor.dim() == tensors[0].dim() and tensor.shape[:-1] == prefix_shape for tensor in tensors)
+
+
+def _nested_tensor_from_trailing_jagged_dim(tensors: Iterable[torch.Tensor]) -> torch.Tensor:
+    tensors = list(tensors)
+    values = torch.cat(tensors, dim=-1)
+    lengths = torch.tensor([tensor.shape[-1] for tensor in tensors], dtype=torch.long, device=values.device)
+    offsets = torch.empty(len(tensors) + 1, dtype=torch.long, device=values.device)
+    offsets[0] = 0
+    torch.cumsum(lengths, dim=0, out=offsets[1:])
+    return torch.nested.nested_tensor_from_jagged(
+        values=values,
+        offsets=offsets,
+        jagged_dim=tensors[0].dim(),
+    )
+
+
+def reconstruct_nested_tensor(
+    tensors: Iterable[torch.Tensor],
+    *,
+    key: str | None = None,
+    layout: torch.layout = torch.jagged,
+    jagged_dim: int | None = None,
+) -> torch.Tensor:
+    """Rebuild a jagged NestedTensor without losing VLM position_ids layout.
+
+    ``torch.nested.as_nested_tensor`` auto-detects the jagged dimension. For
+    VLM mRoPE ``position_ids`` with per-sample shape ``(3|4, seq_len)``, equal
+    sequence lengths can be misdetected as ``(batch, j_channels, seq_len)``.
+    Reconstruct those tensors explicitly as ``(batch, channels, j_seq)``.
+    """
+    tensors = list(tensors)
+    trailing_jagged = tensors and jagged_dim == tensors[0].dim()
+    if (
+        (key == "position_ids" or trailing_jagged)
+        and layout == torch.jagged
+        and _can_reconstruct_with_trailing_jagged_dim(tensors)
+    ):
+        return _nested_tensor_from_trailing_jagged_dim(tensors)
+
+    return torch.nested.as_nested_tensor(tensors, layout=layout)
+
+
+def concat_nested_tensors(tensors: list[torch.Tensor], *, key: str | None = None) -> torch.Tensor:
     """Concatenate multiple nested tensors along the batch dimension.
 
     Takes a list of nested tensors with jagged layout and concatenates them
@@ -191,7 +240,7 @@ def concat_nested_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
         unbind_tensor = tensor.unbind(0)
         unbind_tensors.extend(list(unbind_tensor))
 
-    tensor = torch.nested.as_nested_tensor(unbind_tensors, layout=torch.jagged)
+    tensor = reconstruct_nested_tensor(unbind_tensors, key=key)
     return tensor
 
 
@@ -271,7 +320,7 @@ def concat_tensordict(data: list[TensorDict]) -> TensorDict:
     # Concatenate and add nested tensors to the output
     for key in nested_tensor_keys:
         nested_tensors_to_concat = [td[key] for td in data]
-        output[key] = concat_nested_tensors(nested_tensors_to_concat)
+        output[key] = concat_nested_tensors(nested_tensors_to_concat, key=key)
 
     return output
 
@@ -337,13 +386,11 @@ def chunk_tensordict(td: TensorDict, chunks: int) -> list[TensorDict]:
             for i, chunk_td in enumerate(tds):
                 chunk_lengths = lengths[i * chunk_size : (i + 1) * chunk_size]
                 chunk_tensors = [padded_chunks[i][j, :seq_len] for j, seq_len in enumerate(chunk_lengths)]
-                chunk_td[key] = torch.nested.as_nested_tensor(chunk_tensors, layout=torch.jagged)
+                chunk_td[key] = reconstruct_nested_tensor(chunk_tensors, key=key)
             continue
 
         for i, chunk_td in enumerate(tds):
-            chunk_td[key] = torch.nested.as_nested_tensor(
-                tensors[i * chunk_size : (i + 1) * chunk_size], layout=torch.jagged
-            )
+            chunk_td[key] = reconstruct_nested_tensor(tensors[i * chunk_size : (i + 1) * chunk_size], key=key)
 
     return tds
 
@@ -467,9 +514,7 @@ def index_select_tensor_dict(batch: TensorDict, indices: torch.Tensor | list[int
                 data_dict[key] = tensor[indices]
             elif isinstance(tensor, torch.Tensor) and tensor.is_nested:
                 tensor_lst = tensor.unbind()  # for performance
-                data_dict[key] = torch.nested.as_nested_tensor(
-                    [tensor_lst[idx] for idx in indices], layout=torch.jagged
-                )
+                data_dict[key] = reconstruct_nested_tensor([tensor_lst[idx] for idx in indices], key=key)
             else:
                 # This handles NonTensorStack (indexable by batch dim) and NonTensorData (scalar metadata).
                 if tensor.shape:
@@ -883,9 +928,13 @@ def contiguous(data: TensorDict) -> TensorDict:
 def maybe_fix_3d_position_ids(data: TensorDict):
     # note for tensordict with pickle/unpickle. nested tensor in tensordict after consolidate and pickle/unpickle
     # will incur indexing error for ragged tensor. This only happens when using 3D position ids in VLMs.
-    # This is likely a bug in tensordict. As a workaround, we manually set _ragged_index.
+    # This is likely a bug in tensordict. As a workaround, rebuild or mark the correct ragged index.
     if "position_ids" in data.keys() and data["position_ids"].dim() == 3 and data["position_ids"].is_nested:
-        data["position_ids"]._ragged_idx = 2
+        position_ids = data["position_ids"]
+        if getattr(position_ids, "_ragged_idx", None) != 2:
+            data["position_ids"] = reconstruct_nested_tensor(position_ids.unbind(), key="position_ids")
+        else:
+            data["position_ids"]._ragged_idx = 2
 
 
 def list_of_dict_to_tensordict(list_of_dicts: list[dict[str, Any]]) -> TensorDict:

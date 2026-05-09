@@ -27,6 +27,16 @@ from tensordict.tensorclass import NonTensorData, NonTensorStack
 from verl.utils import tensordict_utils as tu
 
 
+def _assert_position_ids_nested_tensor(tensor: torch.Tensor, expected_tensors: list[torch.Tensor]):
+    assert tensor.is_nested
+    assert tensor.dim() == 3
+    assert tensor.shape[0] == len(expected_tensors)
+    assert tensor.shape[1] == expected_tensors[0].shape[0]
+    assert tensor.values().shape == (expected_tensors[0].shape[0], sum(item.shape[-1] for item in expected_tensors))
+    for actual, expected in zip(tensor.unbind(0), expected_tensors, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
 def test_union_tensor_dict():
     obs = torch.randn(100, 10)
 
@@ -126,6 +136,17 @@ def test_index_select_tensor_dict():
         non_tensor_dict=non_tensor_dict,
     )
     tu.assert_tensordict_eq(selected_data, target_select_data)
+
+
+def test_index_select_tensor_dict_equal_length_3d_position_ids():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    position_ids = torch.nested.as_nested_tensor(position_id_list, layout=torch.jagged)
+    data = tu.get_tensordict(tensor_dict={"position_ids": position_ids})
+
+    indices = torch.tensor([3, 1])
+    selected_data = tu.index_select_tensor_dict(data, indices)
+
+    _assert_position_ids_nested_tensor(selected_data["position_ids"], [position_id_list[3], position_id_list[1]])
 
 
 def test_tensordict_with_images():
@@ -835,6 +856,18 @@ def test_chunk_tensordict():
                         assert expect is None
                     else:
                         assert torch.all(torch.eq(tensor.data["pixel_values"], expect["pixel_values"])).item()
+
+
+def test_chunk_tensordict_equal_length_3d_position_ids():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    position_ids = torch.nested.as_nested_tensor(position_id_list, layout=torch.jagged)
+    input_ids = torch.nested.as_nested_tensor([torch.arange(5) + i * 10 for i in range(4)], layout=torch.jagged)
+    td = tu.get_tensordict({"input_ids": input_ids, "position_ids": position_ids})
+
+    chunks = tu.chunk_tensordict(td, chunks=2)
+
+    _assert_position_ids_nested_tensor(chunks[0]["position_ids"], position_id_list[:2])
+    _assert_position_ids_nested_tensor(chunks[1]["position_ids"], position_id_list[2:])
 
 
 def test_assign_non_tensor_stack_with_nested_lists():

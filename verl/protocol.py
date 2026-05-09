@@ -284,8 +284,10 @@ def deserialize_tensordict(arr: Any) -> TensorDict:
             # decode nested tensor
             layout, data = v
             torch_layout = getattr(torch, layout)
-            decoded_items[k] = torch.nested.as_nested_tensor(
-                [deserialize_single_tensor(tensor) for tensor in data], layout=torch_layout
+            from verl.utils import tensordict_utils as tu
+
+            decoded_items[k] = tu.reconstruct_nested_tensor(
+                [deserialize_single_tensor(tensor) for tensor in data], key=k, layout=torch_layout
             )
         else:
             raise ValueError(f"Invalid tensor encoding format, expected length 2 or 3, got {len(v)}")

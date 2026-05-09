@@ -26,6 +26,7 @@ from verl.utils.seqlen_balancing import (
     rearrange_micro_batches,
     restore_dynamic_batch,
 )
+from verl.utils.tensordict_utils import reconstruct_nested_tensor
 
 
 def test_seqlen_balancing():
@@ -59,6 +60,25 @@ def test_dynamic_batch():
     input_ids = torch.cat([micro_batch.batch["input_ids"] for micro_batch in micro_batches], dim=0)
     input_ids = restore_dynamic_batch(input_ids, micro_bsz_idx_lst)
     torch.testing.assert_close(input_ids, dataproto.batch["input_ids"])
+
+
+def test_restore_dynamic_batch_equal_length_3d_position_ids():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    batch_idx_list = [[2, 0], [3, 1]]
+    shuffled_indices = [idx for partition in batch_idx_list for idx in partition]
+    shuffled_position_ids = reconstruct_nested_tensor(
+        [position_id_list[idx] for idx in shuffled_indices],
+        key="position_ids",
+    )
+
+    restored = restore_dynamic_batch(shuffled_position_ids, batch_idx_list)
+
+    assert restored.is_nested
+    assert restored.dim() == 3
+    assert restored.shape[1] == 4
+    assert restored.values().shape == (4, 20)
+    for actual, expected in zip(restored.unbind(0), position_id_list, strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
 def _worker(rank, world_size, init_method, max_token_len, use_same_dp, min_mb):

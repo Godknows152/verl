@@ -36,6 +36,28 @@ from verl.utils.model import extract_multi_modal_inputs
 custom_model_prefix = Path("~/models").expanduser().resolve()
 
 
+def test_sft_tensor_collator_equal_length_3d_position_ids():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(2)]
+    samples = [
+        {
+            "input_ids": torch.arange(5) + i * 10,
+            "loss_mask": torch.ones(5, dtype=torch.long),
+            "position_ids": position_id_list[i],
+        }
+        for i in range(2)
+    ]
+
+    batch = SFTTensorCollator(DatasetPadMode.NO_PADDING)(samples)
+    position_ids = batch["position_ids"]
+
+    assert position_ids.is_nested
+    assert position_ids.dim() == 3
+    assert position_ids.shape[1] == 4
+    assert position_ids.values().shape == (4, 10)
+    for actual, expected in zip(position_ids.unbind(0), position_id_list, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
 @pytest.mark.parametrize(
     "model_path, ignore_input_ids_mismatch",
     [
