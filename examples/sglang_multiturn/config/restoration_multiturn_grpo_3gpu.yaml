@@ -30,7 +30,7 @@ data:
   val_files:
     - data/restoration/test.parquet
   val_max_samples: 8
-  train_batch_size: 12
+  train_batch_size: 6
   max_prompt_length: 2048
   max_response_length: 3072
   return_raw_chat: true
@@ -42,28 +42,28 @@ data:
 algorithm:
   adv_estimator: grpo
   kl_ctrl:
-    kl_coef: 0.1
+    kl_coef: 0.02
 
 # ---------------------------------------------------------------------------
 # Actor / Rollout / Ref
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    # step_108 checkpoint 合并后的 HF 格式模型路径
-    path: /home/LXJ/Python_Projects/verl/checkpoints/merged
+    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
 
   actor:
     optim:
-      lr: 2.0e-5
+      lr: 5.0e-5
     entropy_coeff: 0.02
+    ppo_epochs: 2
     use_kl_loss: true
-    kl_loss_coef: 0.05
+    kl_loss_coef: 0.02
     fsdp_config:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
     ppo_mini_batch_size: 6
-    ppo_micro_batch_size_per_gpu: 4
+    ppo_micro_batch_size_per_gpu: 3
 
   rollout:
     name: sglang
@@ -71,7 +71,7 @@ actor_rollout_ref:
     temperature: 1.0
     disable_multimodal_special_token_generation: true
     # GRPO requires n > 1 to compute group-relative advantages
-    n: 2
+    n: 4
     tensor_model_parallel_size: 1
     # SGLang uses 3 GPUs (0-2); restoration/IQA models share residual VRAM,
     # with GPU 2 typically the tightest due to IQA placement.
@@ -106,10 +106,9 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_3gpu
   # 从 global_step_15 续训（原 multiturn_grpo_3gpu 目录），新 ckpt 保存到独立目录
-  # 本次调整：kl_loss_coef 0.1→0.05，entropy_coeff 0.01→0.02
-  resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/global_step_15
-  default_local_dir: checkpoints/verl/multiturn_grpo_3gpu_kl05_ent02
+  # 本次调整：kl_loss_coef 0.1→0.02，entropy_coeff 0.01→0.02
+  resume_mode: auto
+  default_local_dir: checkpoints/verl/multiturn_grpo_3gpu
   log_val_generations: 5
   # 使用 3 张 GPU (0-2)；IQA 固定在 GPU 2，GPU 2 是显存最紧张的卡
   # (num_gpus_per_worker: 0.0 — AgentLoopWorker 直接访问 GPU 2，不通过 Ray 申请)

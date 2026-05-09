@@ -1,13 +1,20 @@
-# Image Restoration Multi-turn GRPO Training Configuration
+# Image Restoration Multi-turn GRPO Training Configuration — 2-GPU variant
 #
-# Trains a Qwen3-VL model to perform iterative image restoration by selecting
-# appropriate restoration tools based on observed degradation.
+# 基于 restoration_multiturn_grpo.yaml，改动点：
+#   - trainer.n_gpus_per_node: 4 → 2
+#   - trainer.default_local_dir: 独立 checkpoint 目录，避免与其他 ckpt 混用
+#   - data.train_batch_size: 16 → 8（随 GPU 数量等比缩减）
+#   - actor.ppo_mini_batch_size: 8 → 4
+#   - rollout.multi_turn.tool_config_path: 指向 2-GPU 专用 tool config
+#     （修复模型全部在 cuda:0，IQA 独占 cuda:1）
+#
+# GPU 分配说明（2 卡版本）：
+#   GPU 0: SGLang rollout (TP=1) + 所有图像修复模型
+#   GPU 1: SGLang rollout (TP=1) + IQA 模型
 #
 # Usage:
 #   cd /home/LXJ/Python_Projects/verl
-#   python3 -m verl.trainer.main_ppo \
-#     --config-path="$(pwd)/examples/sglang_multiturn/config" \
-#     --config-name='restoration_multiturn_grpo'
+#   bash examples/sglang_multiturn/run_qwen3_vl_restoration_2gpu.sh
 
 hydra:
   searchpath:
@@ -21,7 +28,6 @@ defaults:
 # Data
 # ---------------------------------------------------------------------------
 data:
-  # Update these paths after running convert_restoration_dataset.py
   train_files:
     - data/restoration/train.parquet
   val_files:
@@ -30,10 +36,7 @@ data:
   train_batch_size: 8
   max_prompt_length: 2048
   max_response_length: 3072
-  # Return raw multi-turn chat structure (required by the agent loop)
   return_raw_chat: true
-  # IMPORTANT: Must be false for multi-turn with tool-generated images —
-  # the agent loop injects new images dynamically during rollout.
   return_multi_modal_inputs: false
 
 # ---------------------------------------------------------------------------
@@ -49,7 +52,6 @@ algorithm:
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    # Update to your actual Qwen3-VL checkpoint path
     path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
 
   actor:
@@ -60,34 +62,30 @@ actor_rollout_ref:
     use_kl_loss: true
     kl_loss_coef: 0.02
     fsdp_config:
-      # Use bf16 to match Flash Attention 2 requirements and reduce memory pressure
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 8
+    ppo_mini_batch_size: 4
     ppo_micro_batch_size_per_gpu: 4
 
   rollout:
     name: sglang
-    # Keep rollout dtype aligned with actor precision
     dtype: bfloat16
     temperature: 1.0
     disable_multimodal_special_token_generation: true
     # GRPO requires n > 1 to compute group-relative advantages
     n: 4
-    # TP=1 gives each rollout shard a full model replica on one GPU and maximizes
-    # rollout-side parallelism, but it also increases per-GPU memory pressure.
     tensor_model_parallel_size: 1
-    # SGLang uses all 4 GPUs (0-3); restoration/IQA models still share residual VRAM,
-    # with GPU 3 typically the tightest due to IQA placement.
+    # SGLang uses 2 GPUs (0-1); GPU 0 additionally hosts restoration models,
+    # GPU 1 additionally hosts IQA models.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.575
+    gpu_memory_utilization: 0.475
     log_prob_micro_batch_size_per_gpu: 4
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
       num_workers: 1
-      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 3's remaining VRAM
+      # No dedicated GPU requested from Ray; restoration/IQA models share residual VRAM
       num_gpus_per_worker: 0.0
       default_agent_loop: tool_agent
 
@@ -95,9 +93,9 @@ actor_rollout_ref:
       enable: true
       max_user_turns: 7
       max_assistant_turns: 6
-      # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
-      tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
+      # 使用 2-GPU 专用 tool config（修复模型在 cuda:0，IQA 在 cuda:1）
+      tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml
 
   ref:
     log_prob_micro_batch_size_per_gpu: 2
@@ -110,25 +108,18 @@ trainer:
     - console
     - swanlab
   project_name: verl
-  experiment_name: qwen3vl_restoration_grpo
-  # Resume from the last saved checkpoint automatically.
-  # "auto" reads latest_checkpointed_iteration.txt under default_local_dir
-  # and restores actor weights, optimizer state, and dataloader position.
+  experiment_name: qwen3vl_restoration_grpo_2gpu
   resume_mode: auto
-  default_local_dir: checkpoints/verl/multiturn_grpo_0429
+  default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
-  # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models share remaining VRAM,
-  # with GPU 3 usually the first pressure point because IQA is pinned there.
-  # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
-  n_gpus_per_node: 4
+  # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型
+  n_gpus_per_node: 2
   nnodes: 1
   save_freq: 3
   test_freq: 10
   total_epochs: 3
   max_actor_ckpt_to_keep: 10
   val_before_train: false
-  # Pass LD_LIBRARY_PATH and LD_PRELOAD to Ray workers so SGLang subprocesses can find PyTorch's CUDA 12.8 runtime
-  # LD_PRELOAD forces the correct libcudart.so.12 (with cudaGetDriverEntryPointByVersion) to load first
   ray_kwargs:
     ray_init:
       runtime_env:

@@ -26,7 +26,7 @@ tools:
       # IQA stays pinned to gpu3, but rollout may also use gpu3 when TP=1.
       model_devices: [cuda:0, cuda:1, cuda:2]
       # Directory for intermediate output images
-      output_dir: /tmp/verl_restoration
+      output_dir: /home/LXJ/tmp/verl_restoration
       # Use phase-managed loading: preload all models at sampling start,
       # and unload all models once after sampling finishes.
       preload: false

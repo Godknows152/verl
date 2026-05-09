@@ -74,4 +74,5 @@ export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \
     trainer.experiment_name="multiturn_grpo_$(date +%m%d)" \
+    trainer.default_local_dir="multiturn_grpo_$(date +%m%d)" \
     "$@" 2>&1 | tee "$LOG_FILE"

@@ -1,47 +1,45 @@
-# Image Restoration Tool Configuration — 3-GPU variant
+# Image Restoration Tool Configuration — 2-GPU variant
 #
-# 与 restoration_tool_config.yaml 的唯一区别：
-#   iqa_device: cuda:3 → cuda:2（3 卡训练时 GPU 3 不存在）
+# 与 restoration_tool_config_3gpu.yaml 的区别：
+#   model_devices: [cuda:0, cuda:1] → [cuda:0]（修复模型全部集中在 GPU 0）
+#   iqa_device: cuda:2 → cuda:1（IQA 模型独占 GPU 1）
 #
-# GPU 分配说明（3 卡版本）：
-#   GPU 0-2: SGLang rollout (TP=1, 每卡一个副本)
-#   GPU 0-2: 修复模型按 round-robin 分布（model_devices）
-#   GPU 2:   IQA 模型（iqa_device）
-#   => GPU 2 同时承载 SGLang + 修复模型 + IQA，显存最为紧张
+# GPU 分配说明（2 卡版本）：
+#   GPU 0: SGLang rollout + 所有图像修复模型
+#   GPU 1: SGLang rollout + IQA 模型
+#   => GPU 0 承载 SGLang + 修复模型，GPU 1 承载 SGLang + IQA
 #
 # GPU memory management strategy:
 #   To avoid conflicts with SGLang's memory_saver (which can cause
 #   resume_memory_occupation timeouts), dynamic model loading is used:
 #   - preload=false: models are loaded on demand instead of at startup
-#   - auto_unload=true: models are unloaded after each use to free GPU memory
-#   This allows SGLang to reclaim GPU memory when syncing weights.
+#   - auto_unload=false: models stay in memory across steps to avoid reload overhead
 #
 # Usage:
 #   actor_rollout_ref:
 #     rollout:
 #       multi_turn:
-#         tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml
+#         tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml
 
 tools:
   - class_name: "verl.tools.restoration_tool.RestorationTool"
     config:
       type: native
-      # Base device fallback. Actual restoration models are distributed across model_devices.
+      # Base device fallback. Actual restoration models are all on GPU 0.
       device: cuda:0
-      # Distribute restoration models across GPU 0-1 only.
-      # GPU 2 is excluded from model_devices: it already hosts SGLang rollout + IQA,
-      # and cannot absorb additional restoration model memory (~3 GiB per model load).
-      model_devices: [cuda:0, cuda:1]
+      # All restoration models on GPU 0 only.
+      # GPU 1 is reserved exclusively for IQA to avoid memory contention.
+      model_devices: [cuda:0]
       # Directory for intermediate output images
       output_dir: /home/LXJ/tmp/verl_restoration
       # Use phase-managed loading: preload all models at sampling start,
       # and unload all models once after sampling finishes.
       preload: false
       auto_unload: false
-      # IQA reward computation settings: pin IQA to gpu2.
-      # gpu2 is shared by SGLang rollout + restoration models + IQA, making it the tightest GPU.
+      # IQA reward computation settings: pin IQA to GPU 1.
+      # GPU 1 is exclusively reserved for IQA, keeping it separate from restoration models.
       use_iqa: true
-      iqa_device: cuda:2
+      iqa_device: cuda:1
       # Compute frozen local dataset stats first:
       # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet
       normalize_iqa_scores: true
