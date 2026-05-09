@@ -182,6 +182,50 @@ def _nested_tensor_from_trailing_jagged_dim(tensors: Iterable[torch.Tensor]) -> 
     )
 
 
+def _is_static_dim(dim: Any) -> bool:
+    return isinstance(dim, int)
+
+
+def _has_trailing_jagged_storage(values: torch.Tensor, offsets: torch.Tensor) -> bool:
+    if values.dim() < 2:
+        return False
+
+    offset_end = int(offsets[-1].item())
+    return values.shape[0] in (3, 4) and values.shape[-1] == offset_end
+
+
+def _middle_jagged_position_ids_to_tensors(values: torch.Tensor, offsets: torch.Tensor) -> list[torch.Tensor]:
+    row_lengths = (offsets[1:] - offsets[:-1]).tolist()
+    channel_dim = next((length for length in row_lengths if length > 0), None)
+    if channel_dim is None:
+        raise RuntimeError("Cannot infer mRoPE channel dimension from empty 3D position_ids")
+
+    tensors = []
+    for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True):
+        if start == end:
+            tensors.append(values.new_empty((channel_dim, 0)))
+        else:
+            tensors.append(values[start:end, :])
+    return tensors
+
+
+def _reconstruct_3d_position_ids_without_unbind(position_ids: torch.Tensor) -> torch.Tensor:
+    """Normalize 3D VLM position_ids without calling ``unbind`` first.
+
+    TensorDict/Ray transport can leave NestedTensor metadata inconsistent with
+    its internal ``values``/``offsets`` layout. In that state ``unbind`` itself
+    can fail, so this function reconstructs from the lower-level jagged storage.
+    """
+    values = position_ids.values()
+    offsets = position_ids.offsets()
+
+    if not _is_static_dim(position_ids.shape[-1]) or _has_trailing_jagged_storage(values, offsets):
+        return torch.nested.nested_tensor_from_jagged(values=values, offsets=offsets, jagged_dim=2)
+
+    tensors = _middle_jagged_position_ids_to_tensors(values, offsets)
+    return _nested_tensor_from_trailing_jagged_dim(tensors)
+
+
 def reconstruct_nested_tensor(
     tensors: Iterable[torch.Tensor],
     *,
@@ -928,13 +972,9 @@ def contiguous(data: TensorDict) -> TensorDict:
 def maybe_fix_3d_position_ids(data: TensorDict):
     # note for tensordict with pickle/unpickle. nested tensor in tensordict after consolidate and pickle/unpickle
     # will incur indexing error for ragged tensor. This only happens when using 3D position ids in VLMs.
-    # This is likely a bug in tensordict. As a workaround, rebuild or mark the correct ragged index.
+    # This is likely a bug in tensordict. As a workaround, rebuild from jagged storage.
     if "position_ids" in data.keys() and data["position_ids"].dim() == 3 and data["position_ids"].is_nested:
-        position_ids = data["position_ids"]
-        if getattr(position_ids, "_ragged_idx", None) != 2:
-            data["position_ids"] = reconstruct_nested_tensor(position_ids.unbind(), key="position_ids")
-        else:
-            data["position_ids"]._ragged_idx = 2
+        data["position_ids"] = _reconstruct_3d_position_ids_without_unbind(data["position_ids"])
 
 
 def list_of_dict_to_tensordict(list_of_dicts: list[dict[str, Any]]) -> TensorDict:

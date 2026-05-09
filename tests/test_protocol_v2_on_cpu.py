@@ -149,6 +149,61 @@ def test_index_select_tensor_dict_equal_length_3d_position_ids():
     _assert_position_ids_nested_tensor(selected_data["position_ids"], [position_id_list[3], position_id_list[1]])
 
 
+def test_maybe_fix_3d_position_ids_middle_jagged_layout_without_unbind():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    position_ids = torch.nested.as_nested_tensor(position_id_list, layout=torch.jagged)
+    position_ids._ragged_idx = 0
+    data = tu.get_tensordict(tensor_dict={"position_ids": position_ids})
+
+    tu.maybe_fix_3d_position_ids(data)
+
+    _assert_position_ids_nested_tensor(data["position_ids"], position_id_list)
+
+
+def test_maybe_fix_3d_position_ids_middle_jagged_empty_sequence_without_unbind():
+    position_id_list = [
+        torch.arange(20).reshape(4, 5),
+        torch.empty(4, 0, dtype=torch.long),
+        torch.arange(20).reshape(4, 5) + 100,
+    ]
+    middle_jagged_position_ids = torch.nested.as_nested_tensor(
+        [position_id_list[0], position_id_list[1].new_empty((0, 5)), position_id_list[2]], layout=torch.jagged
+    )
+    middle_jagged_position_ids._ragged_idx = 0
+    data = tu.get_tensordict(tensor_dict={"position_ids": middle_jagged_position_ids})
+
+    tu.maybe_fix_3d_position_ids(data)
+
+    _assert_position_ids_nested_tensor(data["position_ids"], position_id_list)
+
+
+def test_maybe_fix_3d_position_ids_default_jagged_dim_empty_sequence_without_unbind():
+    position_id_list = [
+        torch.arange(20).reshape(4, 5),
+        torch.empty(4, 0, dtype=torch.long),
+        torch.arange(20).reshape(4, 5) + 100,
+    ]
+    values = torch.cat(position_id_list, dim=-1)
+    offsets = torch.tensor([0, 5, 5, 10])
+    position_ids = torch.nested.nested_tensor_from_jagged(values=values, offsets=offsets)
+    data = tu.get_tensordict(tensor_dict={"position_ids": position_ids})
+
+    tu.maybe_fix_3d_position_ids(data)
+
+    _assert_position_ids_nested_tensor(data["position_ids"], position_id_list)
+
+
+def test_maybe_fix_3d_position_ids_trailing_jagged_layout_without_unbind():
+    position_id_list = [torch.arange(20).reshape(4, 5) + i * 100 for i in range(4)]
+    position_ids = tu.reconstruct_nested_tensor(position_id_list, key="position_ids")
+    position_ids._ragged_idx = 1
+    data = tu.get_tensordict(tensor_dict={"position_ids": position_ids})
+
+    tu.maybe_fix_3d_position_ids(data)
+
+    _assert_position_ids_nested_tensor(data["position_ids"], position_id_list)
+
+
 def test_tensordict_with_images():
     # each sample contains a sequence with multiple images of different sizes
     vocab_size = 128
