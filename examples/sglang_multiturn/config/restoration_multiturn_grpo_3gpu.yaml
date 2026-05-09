@@ -1,13 +1,14 @@
 # Image Restoration Multi-turn GRPO Training Configuration — 3-GPU variant
 #
 # 基于 restoration_multiturn_grpo.yaml，改动点：
-#   - actor_rollout_ref.model.path: 指向 step_108 合并后的 HF 模型
-#   - trainer.resume_mode: disable（从合并后的 HF 模型全新开始）
+#   - actor_rollout_ref.model.path: 指向 step120 合并后的 HF 模型
+#   - trainer.resume_mode: disable（从合并后的 HF 模型全新开始，不续训旧 VERL ckpt）
 #   - trainer.default_local_dir: 新 checkpoint 目录，避免与旧 4 卡 ckpt 混用
 #   - trainer.n_gpus_per_node: 4 → 3
 #   - trainer.total_epochs: 3
 #   - rollout.multi_turn.tool_config_path: 指向 3-GPU 专用 tool config
 #   - tool config 中 iqa_device: cuda:3 → cuda:2
+#   - tool config 中 auto_unload: false（显存充足，无需每次采样后自卸载）
 #
 # Usage:
 #   cd /home/LXJ/Python_Projects/verl
@@ -42,28 +43,28 @@ data:
 algorithm:
   adv_estimator: grpo
   kl_ctrl:
-    kl_coef: 0.02
+    kl_coef: 0.08
 
 # ---------------------------------------------------------------------------
 # Actor / Rollout / Ref
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
+    path: /home/LXJ/Python_Projects/verl/checkpoints/merged/step120
 
   actor:
     optim:
-      lr: 5.0e-5
+      lr: 3.0e-5
     entropy_coeff: 0.02
     ppo_epochs: 2
     use_kl_loss: true
-    kl_loss_coef: 0.02
+    kl_loss_coef: 0.08
     fsdp_config:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
     ppo_mini_batch_size: 6
-    ppo_micro_batch_size_per_gpu: 3
+    ppo_micro_batch_size_per_gpu: 2
 
   rollout:
     name: sglang
@@ -106,7 +107,7 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_3gpu
   # 从 global_step_15 续训（原 multiturn_grpo_3gpu 目录），新 ckpt 保存到独立目录
-  # 本次调整：kl_loss_coef 0.1→0.02，entropy_coeff 0.01→0.02
+  # 本次调整：kl_loss_coef 0.08，entropy_coeff 0.02
   resume_mode: auto
   default_local_dir: checkpoints/verl/multiturn_grpo_3gpu
   log_val_generations: 5

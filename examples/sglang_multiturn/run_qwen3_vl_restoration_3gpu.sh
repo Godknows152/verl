@@ -3,22 +3,15 @@
 #
 # 与 run_qwen3_vl_restoration.sh 的区别：
 #   - 使用 restoration_multiturn_grpo_3gpu.yaml（3 卡配置）
-#   - 模型路径指向 step_108 合并后的 HF 模型
-#   - resume_mode=resume_path，从 checkpoints/verl/multiturn_grpo_3gpu/05081251/global_step_3 续训
-#   - 本次调整：kl_loss_coef 0.1→0.05，entropy_coeff 0.01→0.02
-#   - checkpoint 保存到新的时间戳目录，避免覆盖原续训源目录
+#   - 模型路径指向 step120 合并后的 HF 模型（checkpoints/merged/step120）
+#   - resume_mode=disable，从 step120 全新开始，不续训旧 VERL checkpoint
+#   - tool config 中 auto_unload=false（显存充足，无需每次采样后自卸载）
 #
 # 使用方式：
-#   1. 先合并 step_108 checkpoint（见文件顶部注释）
-#   2. 从项目根目录执行：
-#      bash examples/sglang_multiturn/run_qwen3_vl_restoration_3gpu.sh
+#   从项目根目录执行：
+#     bash examples/sglang_multiturn/run_qwen3_vl_restoration_3gpu.sh
 #
-# 合并 checkpoint 命令（首次使用前运行一次）：
-#   cd /home/LXJ/Python_Projects/verl
-#   python -m verl.model_merger merge \
-#     --backend fsdp \
-#     --local_dir checkpoints/verl/multiturn_grpo_0503_repeat_penalty_from75/global_step_108/actor \
-#     --target_dir checkpoints/merged
+# step120 已合并至 checkpoints/merged/step120，无需重新合并。
 
 set -x
 export HYDRA_FULL_ERROR=1
@@ -58,8 +51,6 @@ mkdir -p /home/LXJ/tmp/verl_restoration
 export PYTHONUNBUFFERED=1
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
-RESUME_FROM_PATH="checkpoints/verl/multiturn_grpo_3gpu/05081251/global_step_3"
-
 # 显式使用 verl conda 环境的 Python，避免调用到系统 python3
 PYTHON_BIN=/home/LXJ/anaconda3/envs/verl/bin/python
 
@@ -69,7 +60,5 @@ $PYTHON_BIN -u -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \
     trainer.experiment_name="multiturn_grpo_3gpu_$(date +%m%d)" \
-    trainer.resume_mode="resume_path" \
-    trainer.resume_from_path="$RESUME_FROM_PATH" \
     trainer.default_local_dir="checkpoints/verl/multiturn_grpo_3gpu/$(date +%m%d%H%M)" \
     "$@" 2>&1 | tee "$LOG_FILE"
