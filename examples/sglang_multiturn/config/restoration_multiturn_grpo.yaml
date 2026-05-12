@@ -93,8 +93,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 7
-      max_assistant_turns: 6
+      max_user_turns: 6
+      max_assistant_turns: 7
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml

@@ -88,8 +88,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 7
-      max_assistant_turns: 6
+      max_user_turns: 6
+      max_assistant_turns: 7
       format: hermes
       # 使用 3-GPU 专用 tool config（iqa_device=cuda:2）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml
@@ -108,7 +108,7 @@ trainer:
   experiment_name: qwen3vl_restoration_grpo_3gpu
   # 从指定 checkpoint 续训
   resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05100234/global_step_21
+  resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05110008/global_step_45
   default_local_dir: checkpoints/verl/multiturn_grpo_3gpu
   log_val_generations: 5
   # 使用 3 张 GPU (0-2)；IQA 固定在 GPU 2，GPU 2 是显存最紧张的卡

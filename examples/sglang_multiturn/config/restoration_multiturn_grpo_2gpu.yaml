@@ -91,8 +91,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 7
-      max_assistant_turns: 6
+      max_user_turns: 6
+      max_assistant_turns: 7
       format: hermes
       # 使用 2-GPU 专用 tool config（修复模型在 cuda:0，IQA 在 cuda:1）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml

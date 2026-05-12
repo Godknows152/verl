@@ -46,11 +46,14 @@ tools:
       iqa_stats_path: data/restoration/iqa_stats.json
       # Optional data-driven metric weights generated from local training data.
       # Without this file, the tool falls back to the legacy hard-coded map.
-      iqa_weight_map_path: data/restoration/iqa_weight_map.json
+      iqa_weight_map_path: data/restoration/iqa_weight_map_v2.json
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       # All thresholds below are interpreted in normalized IQA space.
       alpha: 0.9
       reward_scale: 4.0
+      # Affinity bonus: reward choosing degradation-specific tools over generic ones.
+      # 0.4 means a high-affinity action gets +0.4 on top of the IQA-based reward.
+      affinity_bonus_scale: 0.4
       # Penalize repeating the same tool when weighted z-score gains are already small.
       repeat_action_penalty: 0.75
       repeat_low_gain_penalty: 2.0

@@ -99,6 +99,20 @@ ALLOWED_ACTIONS = {
     'turbo_rain', 's2former', 'idt', 'ridcp', 'kanet', 'turbo_snow', 'snowmaster', 'stop',
 }
 
+# Degradation type → recommended action affinity map.
+# Values in [0, 1]: 1.0 = primary recommendation, 0.8 = strong, 0.5 = moderate.
+# When affinity_bonus_scale > 0, choosing a high-affinity action yields a bonus
+# on top of the IQA-based step reward, guiding the model to learn the mapping
+# between degradation types and their specialized restoration tools.
+DEGRADATION_ACTION_AFFINITY: dict[str, dict[str, float]] = {
+    'night':       {'retinexformer_fivek': 1.0, 'hvicidnet': 1.0, 'lightdiff': 0.8},
+    'rain_streak': {'s2former': 1.0, 'turbo_rain': 1.0, 'idt': 0.8},
+    'rain_drop':   {'idt': 1.0, 'turbo_rain': 0.8, 's2former': 0.6},
+    'rain_drive':  {'turbo_rain': 1.0, 'idt': 0.8, 's2former': 0.6},
+    'fog':         {'ridcp': 1.0, 'kanet': 1.0},
+    'snow':        {'turbo_snow': 1.0, 'snowmaster': 1.0},
+}
+
 # Legacy IQA metric weights per degradation type (QAlign, MANIQA, MUSIQ, CLIPIQA, NIQE).
 # Prefer loading a data-driven map from local training data via ``iqa_weight_map_path``.
 SCORE_WEIGHT_MAP: dict[str, list[float]] = {
@@ -305,6 +319,7 @@ class RestorationTool(BaseTool):
         self.alpha = float(config.get("alpha", 0.9))       # marginal-improvement weight
         self.beta = 1.0 - self.alpha                       # identity-improvement weight
         self.reward_scale = float(config.get("reward_scale", 1.0))
+        self.affinity_bonus_scale = float(config.get("affinity_bonus_scale", 0.0))
         self.repeat_action_penalty = float(config.get("repeat_action_penalty", REPEAT_ACTION_PENALTY))
         self.repeat_low_gain_penalty = float(config.get("repeat_low_gain_penalty", REPEAT_LOW_GAIN_PENALTY))
         self.repeat_low_gain_threshold = float(config.get("repeat_low_gain_threshold", REPEAT_LOW_GAIN_THRESHOLD))
@@ -343,6 +358,7 @@ class RestorationTool(BaseTool):
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
             f"use_iqa={self.use_iqa}, normalize_iqa_scores={self.normalize_iqa_scores}, "
             f"alpha={self.alpha}, reward_scale={self.reward_scale}, "
+            f"affinity_bonus_scale={self.affinity_bonus_scale}, "
             f"repeat_action_penalty={self.repeat_action_penalty}, "
             f"repeat_low_gain_penalty={self.repeat_low_gain_penalty}, "
             f"stop_min_step={self.stop_min_step}, "
@@ -405,8 +421,14 @@ class RestorationTool(BaseTool):
         weights: list[float],
         action: str,
         actions_history: list[str],
+        degradation_type: str | None = None,
     ) -> dict[str, float]:
-        """Compute reward and diagnostics for a restoration step."""
+        """Compute reward and diagnostics for a restoration step.
+
+        Args:
+            degradation_type: Optional degradation category (e.g. 'fog', 'rain_streak').
+                Used to compute an affinity bonus when the action matches the degradation.
+        """
         prev_t = torch.tensor(prev_scores, dtype=torch.float32)
         curr_t = torch.tensor(curr_scores, dtype=torch.float32)
         iden_t = torch.tensor(identity_scores, dtype=torch.float32)
@@ -417,6 +439,22 @@ class RestorationTool(BaseTool):
         mixed = self.alpha * marginal + self.beta * identity
         base_reward = mixed * self.reward_scale
 
+        # Affinity bonus: reward choosing degradation-specific tools over generic ones.
+        # Only awarded once per trajectory — the first time a high-affinity tool is chosen.
+        # Subsequent affinity-matched actions receive no bonus so the model does not
+        # learn to simply repeat the same specialized tool for extra reward.
+        affinity_bonus = 0.0
+        if degradation_type and self.affinity_bonus_scale > 0:
+            affinity_map = DEGRADATION_ACTION_AFFINITY.get(degradation_type, {})
+            affinity_score = affinity_map.get(action, 0.0)
+            if affinity_score > 0:
+                # Check whether an affinity bonus was already given in this trajectory
+                already_given = any(
+                    affinity_map.get(prev, 0.0) > 0 for prev in actions_history
+                )
+                if not already_given:
+                    affinity_bonus = self.affinity_bonus_scale * affinity_score
+
         repeat_count = self._count_consecutive_repeats(actions_history, action)
         repeat_penalty = 0.0
         if repeat_count > 0:
@@ -424,13 +462,16 @@ class RestorationTool(BaseTool):
             if marginal <= self.repeat_low_gain_threshold:
                 repeat_penalty += self.repeat_low_gain_penalty * repeat_count
 
-        reward = float(torch.clamp(torch.tensor(base_reward - repeat_penalty), -10.0, 10.0).item())
+        reward = float(torch.clamp(
+            torch.tensor(base_reward - repeat_penalty + affinity_bonus), -10.0, 10.0
+        ).item())
         return {
             "reward": reward,
             "base_reward": float(base_reward),
             "marginal": float(marginal),
             "identity": float(identity),
             "repeat_penalty": float(repeat_penalty),
+            "affinity_bonus": float(affinity_bonus),
             "consecutive_action_count": float(repeat_count + 1),
         }
 
@@ -482,8 +523,13 @@ class RestorationTool(BaseTool):
         marginal: float,
         identity_delta: float,
         consecutive_action_count: int,
+        degradation_type: str | None = None,
     ) -> str:
-        """Generate human-readable feedback for the model's next turn."""
+        """Generate human-readable feedback for the model's next turn.
+
+        Args:
+            degradation_type: Optional degradation category for affinity hints.
+        """
         history_str = " → ".join(actions_history) if actions_history else "none"
 
         lines = [
@@ -498,6 +544,17 @@ class RestorationTool(BaseTool):
                 f"Consecutive uses of '{action}': {consecutive_action_count}. "
                 "Repeating the same tool without clear gains is discouraged."
             )
+        # Affinity hint: confirm good choices or suggest better alternatives.
+        if degradation_type:
+            affinity_map = DEGRADATION_ACTION_AFFINITY.get(degradation_type, {})
+            if affinity_map.get(action, 0.0) >= 0.8:
+                lines.append(f"'{action}' is well-suited for {degradation_type} degradation.")
+            elif action not in affinity_map and action != 'stop':
+                recommended = [a for a, s in sorted(affinity_map.items(), key=lambda x: -x[1])][:3]
+                if recommended:
+                    lines.append(
+                        f"For {degradation_type} degradation, consider using: {', '.join(recommended)}."
+                    )
         if step >= self.stop_min_step and marginal <= self.repeat_low_gain_threshold:
             lines.append(
                 "Recent gains are small. Consider stopping now or switch to a different targeted operation."
@@ -560,6 +617,7 @@ class RestorationTool(BaseTool):
             "marginals_history": [],
             "identity_scores": identity_scores,
             "weights": weights,
+            "degradation_type": degradation_type,
             "step": 0,
             "output_dir": instance_output_dir,
         }
@@ -680,6 +738,7 @@ class RestorationTool(BaseTool):
                 weights,
                 action=action,
                 actions_history=instance["actions_history"],
+                degradation_type=instance.get("degradation_type"),
             )
             reward = float(reward_info["reward"])
 
@@ -703,6 +762,7 @@ class RestorationTool(BaseTool):
                 marginal=float(reward_info["marginal"]),
                 identity_delta=identity_delta,
                 consecutive_action_count=int(reward_info["consecutive_action_count"]),
+                degradation_type=instance.get("degradation_type"),
             )
 
             # Build response with restored image
@@ -721,7 +781,9 @@ class RestorationTool(BaseTool):
             logger.info(
                 f"Instance {instance_id}: '{action}' done, step={instance['step']}, "
                 f"reward={reward:.4f}, marginal={reward_info['marginal']:.4f}, "
-                f"identity={reward_info['identity']:.4f}, repeat_penalty={reward_info['repeat_penalty']:.4f}, "
+                f"identity={reward_info['identity']:.4f}, "
+                f"repeat_penalty={reward_info['repeat_penalty']:.4f}, "
+                f"affinity_bonus={reward_info['affinity_bonus']:.4f}, "
                 f"output={output_path}"
             )
             return response, reward, {
@@ -732,6 +794,7 @@ class RestorationTool(BaseTool):
                 "marginal": reward_info["marginal"],
                 "identity_delta": identity_delta,
                 "repeat_penalty": reward_info["repeat_penalty"],
+                "affinity_bonus": reward_info["affinity_bonus"],
                 "consecutive_action_count": int(reward_info["consecutive_action_count"]),
                 "iqa_scores": curr_scores,
                 "input_path": current_image,

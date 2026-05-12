@@ -76,6 +76,8 @@ class AgentData:
         self.user_turns = 0
         self.assistant_turns = 0
         self.total_tool_calls = 0
+        # Track action names across the trajectory for trajectory-level penalties
+        self.action_history: list[str] = []
 
         # Temporary state for tool calls
         self.tool_calls: list[FunctionCall] = []
@@ -94,6 +96,9 @@ class ToolAgentLoop(AgentLoopBase):
     TOOL_CALL_REWARD = 2.0
     NO_TOOL_LENGTH_THRESHOLD = 256
     NO_TOOL_LENGTH_PENALTY_ALPHA = 3.0
+    # Per-occurrence penalty for choosing the same tool more than once in a trajectory.
+    # E.g. scale=0.5 → using scunet 3 times costs -0.5*(3-1) = -1.0 total.
+    TRAJECTORY_REPEAT_PENALTY_SCALE = 0.5
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -262,12 +267,33 @@ class ToolAgentLoop(AgentLoopBase):
                     agent_data.extra_fields["no_tool_length_penalty"] = no_tool_length_penalty
 
                 # Expose decomposed reward parts for easier diagnosis in logs.
+                # Trajectory-level duplicate penalty: penalize choosing the same
+                # tool multiple times across the whole trajectory (not just
+                # consecutively).  The penalty grows with the number of repeats:
+                #   penalty = -scale * sum(count - 1 for each tool with count > 1)
+                # i.e. each extra occurrence of a repeated tool costs `scale`.
+                # "stop" is excluded — calling stop multiple times is impossible
+                # because the loop terminates on the first stop.
+                action_counts: dict[str, int] = {}
+                for a in agent_data.action_history:
+                    if a != "stop":
+                        action_counts[a] = action_counts.get(a, 0) + 1
+                total_repeats = sum(c - 1 for c in action_counts.values() if c > 1)
+                trajectory_repeat_penalty = -self.TRAJECTORY_REPEAT_PENALTY_SCALE * total_repeats
+                if trajectory_repeat_penalty < 0:
+                    agent_data.tool_rewards.append(trajectory_repeat_penalty)
+                    agent_data.extra_fields["trajectory_repeat_penalty"] = trajectory_repeat_penalty
+                    agent_data.extra_fields["trajectory_repeat_counts"] = {
+                        a: c for a, c in action_counts.items() if c > 1
+                    }
+
                 agent_data.extra_fields["reward_components"] = {
                     "tool_call_reward_per_step": self.TOOL_CALL_REWARD,
                     "early_stop_penalty": self.EARLY_STOP_PENALTY if no_tool_call else 0.0,
                     "no_tool_length_threshold": self.NO_TOOL_LENGTH_THRESHOLD,
                     "no_tool_length_penalty_alpha": self.NO_TOOL_LENGTH_PENALTY_ALPHA,
                     "response_length": response_len,
+                    "trajectory_repeat_penalty": trajectory_repeat_penalty,
                     "tool_reward_sum": float(sum(agent_data.tool_rewards)) if agent_data.tool_rewards else 0.0,
                 }
 
@@ -353,12 +379,8 @@ class ToolAgentLoop(AgentLoopBase):
         if output.routed_experts is not None:
             agent_data.routed_experts = output.routed_experts
 
-        # Check termination conditions
+        # Check hard termination conditions (response length overflow)
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
-            return AgentState.TERMINATED
-        if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
-            return AgentState.TERMINATED
-        if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
             return AgentState.TERMINATED
 
         # Extract tool calls (use per-sample tools if routed)
@@ -366,9 +388,21 @@ class ToolAgentLoop(AgentLoopBase):
         tools = [tool.tool_schema for tool in active_tools.values()]
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
 
+        # Check soft termination conditions (max turns) AFTER tool call extraction.
+        # This ensures the final assistant turn's tool call (e.g. "stop") is still
+        # processed and rewarded, rather than being silently discarded.
+        at_max_assistant_turns = self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns
+        at_max_user_turns = self.max_user_turns and agent_data.user_turns >= self.max_user_turns
+
         if agent_data.tool_calls:
+            # If we are at max turns, still execute the tool call (e.g. "stop")
+            # so its reward is computed, but mark that the loop should terminate
+            # after processing the tool response.
+            if at_max_assistant_turns or at_max_user_turns:
+                agent_data.extra_fields["_terminate_after_tool"] = True
             return AgentState.PROCESSING_TOOLS
         else:
+            # No tool call — terminate.
             # Enforce tool usage per assistant turn for restoration.
             # Any step that does not call a tool is treated as early stop and penalized.
             if getattr(agent_data, "data_source", "") == "restoration":
@@ -447,6 +481,10 @@ class ToolAgentLoop(AgentLoopBase):
                 tool_metrics = tool_metrics or {}
                 tool_call_reward = 0.0 if tool_metrics.get("skip_tool_call_reward") else self.TOOL_CALL_REWARD
                 agent_data.tool_rewards.append(tool_reward + tool_call_reward)
+                # Record action name for trajectory-level duplicate penalty
+                action_name = tool_metrics.get("action")
+                if action_name:
+                    agent_data.action_history.append(action_name)
 
         agent_data.messages.extend(add_messages)
 
@@ -503,6 +541,12 @@ class ToolAgentLoop(AgentLoopBase):
         # at the model's chosen stopping point rather than being forced by max_turns.
         if stop_triggered:
             return AgentState.TERMINATED
+
+        # If we reached max turns before this tool call, the tool was still executed
+        # (so its reward is counted), but we should not continue the loop.
+        if agent_data.extra_fields.get("_terminate_after_tool"):
+            return AgentState.TERMINATED
+
         return AgentState.GENERATING
 
     async def _call_tool(

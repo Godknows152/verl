@@ -41,7 +41,7 @@ tools:
       iqa_stats_path: data/restoration/iqa_stats.json
       # Optional data-driven metric weights generated from local training data.
       # Without this file, the tool falls back to the legacy hard-coded map.
-      iqa_weight_map_path: data/restoration/iqa_weight_map.json
+      iqa_weight_map_path: data/restoration/iqa_weight_map_v2.json
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       # All thresholds below are interpreted in normalized IQA space.
       alpha: 0.9
@@ -61,6 +61,10 @@ tools:
       stop_continue_penalty: -0.4
       stop_recent_reward_window: 2
       stop_recent_reward_threshold: 0.2
+      # Affinity bonus: reward choosing degradation-specific tools over generic ones.
+      # Set to 0 to disable (default). Recommended starting value: 0.3~0.5.
+      # The bonus is added on top of the IQA-based step reward.
+      affinity_bonus_scale: 0.4
     tool_schema:
       type: "function"
       function:
