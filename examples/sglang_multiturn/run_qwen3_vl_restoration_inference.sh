@@ -18,7 +18,7 @@ PROJECT_DIR="$(pwd)"
 LOG_DIR="${LOG_DIR:-$PROJECT_DIR/log}"
 PYTHON_BIN="${PYTHON:-/home/LXJ/anaconda3/envs/verl/bin/python}"
 TRAIN_CONFIG="${TRAIN_CONFIG:-$PROJECT_DIR/examples/sglang_multiturn/config/restoration_multiturn_grpo.yaml}"
-OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/outputs/restoration_inference/$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/outputs/$(date +%Y%m%d_%H%M%S)}"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$OUTPUT_DIR"

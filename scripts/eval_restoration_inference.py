@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from collections import Counter, defaultdict
@@ -102,6 +103,7 @@ class ResolvedConfig:
     system_prompt_template: str = DEFAULT_SYSTEM_PROMPT
     user_prompt_template: str = DEFAULT_USER_PROMPT
     prompt_template_source: str = "builtin"
+    cleanup_tool_output_dir: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -162,13 +164,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=str,
         default=None,
-        help="Directory for summary.json, results.jsonl, and optional restored images.",
+        help="Directory that will contain only res/ and summary/ outputs.",
     )
     parser.add_argument(
         "--tool-output-dir",
         type=str,
         default=None,
-        help="Directory for intermediate restored images. Defaults to <output-dir>/restored_images.",
+        help="Directory for temporary tool outputs. Defaults to a hidden temp dir under <output-dir> and will be cleaned up.",
     )
     parser.add_argument("--model-device", type=str, default="cuda:0", help="Model device or device_map='auto'.")
     parser.add_argument(
@@ -294,9 +296,9 @@ def resolve_runtime_config(args: argparse.Namespace) -> ResolvedConfig:
     output_dir = args.output_dir
     if output_dir is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = str(REPO_ROOT / "outputs" / "restoration_inference" / timestamp)
+        output_dir = str(REPO_ROOT / "outputs" / timestamp)
 
-    tool_output_dir = args.tool_output_dir or str(Path(output_dir) / "restored_images")
+    tool_output_dir = args.tool_output_dir or str(Path(output_dir) / ".tool_tmp")
 
     return ResolvedConfig(
         train_config=str(train_config_path),
@@ -328,12 +330,23 @@ def resolve_runtime_config(args: argparse.Namespace) -> ResolvedConfig:
         trust_remote_code=bool(args.trust_remote_code),
         seed=args.seed,
         dry_run=bool(args.dry_run),
+        cleanup_tool_output_dir=args.tool_output_dir is None,
     )
 
 
 def ensure_output_dirs(config: ResolvedConfig) -> None:
     Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+    get_res_output_dir(config).mkdir(parents=True, exist_ok=True)
+    get_summary_output_dir(config).mkdir(parents=True, exist_ok=True)
     Path(config.tool_output_dir).mkdir(parents=True, exist_ok=True)
+
+
+def get_res_output_dir(config: ResolvedConfig) -> Path:
+    return Path(config.output_dir) / "res"
+
+
+def get_summary_output_dir(config: ResolvedConfig) -> Path:
+    return Path(config.output_dir) / "summary"
 
 
 def json_default(value: Any) -> Any:
@@ -350,6 +363,15 @@ def json_default(value: Any) -> Any:
 
 def save_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default) + "\n", encoding="utf-8")
+
+
+def sanitize_output_stem(path_str: str | None, fallback: str) -> str:
+    if path_str:
+        candidate = Path(path_str).stem
+    else:
+        candidate = fallback
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate).strip("._")
+    return candidate or fallback
 
 
 def torch_dtype_from_name(name: str) -> torch.dtype:
@@ -533,6 +555,49 @@ def named_iqa_scores(scores: list[float] | None) -> dict[str, float] | None:
     }
 
 
+def copy_restored_image(result: dict[str, Any], config: ResolvedConfig) -> str | None:
+    final_image_path = result.get("final_image_path")
+    if result.get("tool_calls_executed", 0) <= 0 or not final_image_path:
+        return None
+
+    source_path = Path(final_image_path)
+    if not source_path.exists():
+        return None
+
+    file_stem = sanitize_output_stem(result.get("image_path"), f"sample_{int(result['index']):06d}")
+    suffix = source_path.suffix or ".png"
+    target_path = get_res_output_dir(config) / f"{int(result['index']):06d}_{file_stem}{suffix}"
+    shutil.copy2(source_path, target_path)
+    return str(target_path)
+
+
+def build_sample_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "index": result["index"],
+        "input_image_path": result["image_path"],
+        "restored_image_path": result.get("saved_restored_image_path"),
+        "degradation_type": result["degradation_type"],
+        "termination_reason": result["termination_reason"],
+        "decision_chain": result["decision_chain"],
+        "decision_chain_text": result["decision_chain_text"],
+        "action_rewards": [
+            {
+                "step": step["step"],
+                "action": step["action"],
+                "reward": step["effective_reward"],
+            }
+            for step in result["decision_steps"]
+        ],
+    }
+
+
+def write_sample_summary(result: dict[str, Any], config: ResolvedConfig) -> Path:
+    file_stem = sanitize_output_stem(result.get("image_path"), f"sample_{int(result['index']):06d}")
+    summary_path = get_summary_output_dir(config) / f"{int(result['index']):06d}_{file_stem}.json"
+    save_json(summary_path, build_sample_summary(result))
+    return summary_path
+
+
 def flatten_images_from_messages(messages: list[dict[str, Any]]) -> list[Image.Image]:
     images: list[Image.Image] = []
     for message in messages:
@@ -712,70 +777,6 @@ def mean_or_none(values: list[float | int | None]) -> float | None:
     if not filtered:
         return None
     return float(fmean(filtered))
-
-
-def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
-    termination_counter = Counter(result["termination_reason"] for result in results)
-    action_counter = Counter()
-    by_degradation: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for result in results:
-        by_degradation[result["degradation_type"]].append(result)
-        for action in result["actions"]:
-            action_counter[action] += 1
-
-    def build_group_summary(group: list[dict[str, Any]]) -> dict[str, Any]:
-        return {
-            "samples": len(group),
-            "mean_total_reward": mean_or_none([item.get("total_reward") for item in group]),
-            "mean_identity_delta": mean_or_none([item.get("final_identity_delta") for item in group]),
-            "mean_tool_calls": mean_or_none([item.get("tool_calls_executed") for item in group]),
-            "mean_assistant_turns": mean_or_none([item.get("assistant_turns") for item in group]),
-            "mean_elapsed_s": mean_or_none([item.get("elapsed_s") for item in group]),
-            "stop_rate": sum(1 for item in group if item["termination_reason"] == "stop") / len(group),
-        }
-
-    total_elapsed = sum(float(item.get("elapsed_s", 0.0)) for item in results)
-    aggregate = {
-        "samples": len(results),
-        "mean_total_reward": mean_or_none([item.get("total_reward") for item in results]),
-        "mean_identity_delta": mean_or_none([item.get("final_identity_delta") for item in results]),
-        "mean_tool_calls": mean_or_none([item.get("tool_calls_executed") for item in results]),
-        "mean_assistant_turns": mean_or_none([item.get("assistant_turns") for item in results]),
-        "mean_elapsed_s": mean_or_none([item.get("elapsed_s") for item in results]),
-        "samples_per_second": (len(results) / total_elapsed) if total_elapsed > 0 else None,
-        "termination_counts": dict(sorted(termination_counter.items())),
-        "action_counts": dict(sorted(action_counter.items())),
-        "by_degradation_type": {key: build_group_summary(value) for key, value in sorted(by_degradation.items())},
-    }
-
-    sample_summaries = []
-    for result in results:
-        sample_summaries.append(
-            {
-                "index": result["index"],
-                "image_path": result["image_path"],
-                "degradation_type": result["degradation_type"],
-                "termination_reason": result["termination_reason"],
-                "decision_chain": result["decision_chain"],
-                "decision_chain_text": result["decision_chain_text"],
-                "step_iqa_scores": [
-                    {
-                        "step": step["step"],
-                        "assistant_turn": step["assistant_turn"],
-                        "action": step["action"],
-                        "effective_reward": step["effective_reward"],
-                        "identity_delta": step["identity_delta"],
-                        "iqa_scores": step["iqa_scores"],
-                    }
-                    for step in result["decision_steps"]
-                ],
-            }
-        )
-
-    return {
-        "aggregate": aggregate,
-        "sample_summaries": sample_summaries,
-    }
 
 
 def print_progress(sample_idx: int, total: int, result: dict[str, Any]) -> None:
@@ -1034,8 +1035,6 @@ async def async_main() -> None:
         end_index = total_dataset if config.max_samples < 0 else min(total_dataset, start_index + config.max_samples)
         eval_samples = dataset
 
-    save_json(Path(config.output_dir) / "resolved_config.json", resolved_config_snapshot(config))
-
     tool = initialize_restore_tool(config)
     tool_schemas = [tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True)]
     tool_parser = ToolParser.get_tool_parser("hermes", tokenizer)
@@ -1049,53 +1048,52 @@ async def async_main() -> None:
     print(f"resolved tool_config_path: {config.tool_config_path}")
     print(f"dataset size: {total_dataset}, evaluating range: [{start_index}, {end_index})")
     print(f"results will be written to: {config.output_dir}")
+    print(f"restored images will be written to: {get_res_output_dir(config)}")
+    print(f"decision summaries will be written to: {get_summary_output_dir(config)}")
 
     if config.dry_run:
+        if config.cleanup_tool_output_dir and Path(config.tool_output_dir).exists():
+            shutil.rmtree(config.tool_output_dir, ignore_errors=True)
         print("dry-run completed: config, dataset, tokenizer/processor, and tool wiring are valid")
         return
 
     model, tokenizer, processor = load_model(config)
     tool_parser = ToolParser.get_tool_parser("hermes", tokenizer)
     maybe_set_seed(config.seed)
-
-    results_path = Path(config.output_dir) / "results.jsonl"
-    summary_path = Path(config.output_dir) / "summary.json"
-    results: list[dict[str, Any]] = []
     did_preload = await maybe_preload_models(config)
 
     try:
-        with results_path.open("w", encoding="utf-8") as fp:
-            if config.input_mode == "images":
-                iterator = enumerate(eval_samples, start=1)
-            else:
-                iterator = (
-                    (offset, eval_samples[row_idx])
-                    for offset, row_idx in enumerate(range(start_index, end_index), start=1)
-                )
+        if config.input_mode == "images":
+            iterator = enumerate(eval_samples, start=1)
+        else:
+            iterator = (
+                (offset, eval_samples[row_idx])
+                for offset, row_idx in enumerate(range(start_index, end_index), start=1)
+            )
 
-            for sample_idx, sample in iterator:
-                result = await evaluate_sample(
-                    sample=sample,
-                    tool=tool,
-                    tool_parser=tool_parser,
-                    tool_schemas=tool_schemas,
-                    model=model,
-                    tokenizer=tokenizer,
-                    processor=processor,
-                    config=config,
-                )
-                results.append(result)
-                fp.write(json.dumps(result, ensure_ascii=False, default=json_default) + "\n")
-                fp.flush()
-                print_progress(sample_idx, end_index - start_index, result)
+        for sample_idx, sample in iterator:
+            result = await evaluate_sample(
+                sample=sample,
+                tool=tool,
+                tool_parser=tool_parser,
+                tool_schemas=tool_schemas,
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+                config=config,
+            )
+            result["saved_restored_image_path"] = copy_restored_image(result, config)
+            summary_path = write_sample_summary(result, config)
+            print_progress(sample_idx, end_index - start_index, result)
+            print(f"saved summary: {summary_path}")
     finally:
         await maybe_unload_models(did_preload)
+        if config.cleanup_tool_output_dir and Path(config.tool_output_dir).exists():
+            shutil.rmtree(config.tool_output_dir, ignore_errors=True)
 
-    summary = summarize_results(results)
-    save_json(summary_path, summary)
     print("evaluation finished")
-    print(json.dumps(summary["aggregate"], ensure_ascii=False, indent=2, default=json_default))
-    print(f"sample-level decision/IQA summary saved to: {summary_path}")
+    print(f"restored images saved under: {get_res_output_dir(config)}")
+    print(f"per-image summaries saved under: {get_summary_output_dir(config)}")
 
 
 def main() -> None:
