@@ -195,7 +195,7 @@ class ToolAgentLoop(AgentLoopBase):
         agent_data.tool_instances.clear()
 
     @rollout_trace_op
-    async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+    async def run(self, sampling_params: dict[str, Any], round_barrier=None, **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
 
         # extract images and videos from messages
@@ -233,10 +233,19 @@ class ToolAgentLoop(AgentLoopBase):
         try:
             # State machine loop
             state = AgentState.PENDING
+            generation_round = 0  # Track which generation round we're on
             while state != AgentState.TERMINATED:
                 if state == AgentState.PENDING:
                     state = await self._handle_pending_state(agent_data, sampling_params)
                 elif state == AgentState.GENERATING:
+                    # Before submitting the generation request, wait for the
+                    # round barrier if this is round 2+ (i.e., after at least
+                    # one tool call has been processed).  Round 1 starts
+                    # naturally for all trajectories at the same time, so no
+                    # barrier is needed there.
+                    if round_barrier is not None and generation_round > 0:
+                        await round_barrier.wait_for_next_round()
+                    generation_round += 1
                     state = await self._handle_generating_state(agent_data, sampling_params)
                 elif state == AgentState.PROCESSING_TOOLS:
                     state = await self._handle_processing_tools_state(agent_data)
@@ -322,6 +331,11 @@ class ToolAgentLoop(AgentLoopBase):
             output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
             return output
         finally:
+            # Always depart from the round barrier, even if an exception occurred.
+            # Without this, remaining trajectories would wait forever for a
+            # departed trajectory that never arrives at the barrier.
+            if round_barrier is not None:
+                round_barrier.depart()
             await self._release_tool_instances(agent_data)
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:

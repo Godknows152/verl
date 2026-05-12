@@ -50,7 +50,7 @@ algorithm:
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    path: /home/LXJ/Python_Projects/verl/checkpoints/merged/step120
+    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
 
   actor:
     optim:
@@ -90,6 +90,14 @@ actor_rollout_ref:
       enable: true
       max_user_turns: 6
       max_assistant_turns: 7
+      # Round-barrier synchronization: all trajectories wait at each generation
+      # round boundary until every trajectory has finished its tool call, then
+      # submit their next generation request simultaneously.  This lets SGLang
+      # batch requests efficiently and eliminates the cascading stagger effect
+      # that causes poor GPU utilization in later rounds.
+      # Set to 0 to disable, or a positive integer to enable (auto = batch size).
+      # 3-GPU: train_batch_size=6 × n=4 = 24 trajectories per batch
+      round_barrier_size: 24
       format: hermes
       # 使用 3-GPU 专用 tool config（iqa_device=cuda:2）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml
@@ -106,9 +114,8 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_3gpu
-  # 从指定 checkpoint 续训
-  resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05110008/global_step_45
+  resume_mode: disable
+# resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05110008/global_step_45
   default_local_dir: checkpoints/verl/multiturn_grpo_3gpu
   log_val_generations: 5
   # 使用 3 张 GPU (0-2)；IQA 固定在 GPU 2，GPU 2 是显存最紧张的卡

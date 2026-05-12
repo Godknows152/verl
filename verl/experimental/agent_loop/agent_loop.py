@@ -62,6 +62,85 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 DEFAULT_ROUTING_CACHE_SIZE = 10000
 
 
+class _RoundBarrier:
+    """Asyncio barrier that synchronizes all trajectories at each generation round.
+
+    When round-barrier synchronization is enabled, every trajectory pauses after
+    finishing its tool call and waits for all other trajectories to also finish
+    their tool calls.  Once all trajectories have arrived at the barrier, they
+    are released simultaneously so that they submit their next generation request
+    to SGLang at the same time, enabling efficient batching.
+
+    The barrier resets automatically after all parties have passed through, so it
+    can be reused for the next round.
+
+    Trajectories that terminate early (e.g., by calling "stop") must call
+    ``depart()`` to reduce the barrier party count so remaining trajectories
+    don't wait forever.
+
+    Implementation uses a generation counter + single Event to avoid race
+    conditions.  Each call records the generation it expects to be released on,
+    and only proceeds when the barrier's generation has advanced past that point.
+    """
+
+    def __init__(self, num_parties: int):
+        self._num_parties = num_parties
+        self._generation = 0  # Monotonically increasing; advances when all parties arrive
+        self._arrived_count = 0
+        self._event = asyncio.Event()
+
+    def depart(self) -> None:
+        """A trajectory that has terminated must call this to reduce the barrier
+        party count.  Without this, remaining trajectories would wait forever
+        for the departed trajectory to arrive at the barrier.
+
+        If the departure causes the remaining arrived count to equal the new
+        party count, the barrier is released immediately.
+
+        This method is idempotent — calling it more than once has no effect
+        beyond the first call.
+        """
+        if self._num_parties <= 0:
+            return  # Already departed or no parties left
+        self._num_parties -= 1
+        # If all remaining parties have already arrived, release the barrier now
+        if self._num_parties <= 0:
+            # No parties left — release any stragglers and advance generation
+            self._generation += 1
+            self._arrived_count = 0
+            self._event.set()
+            self._event.clear()
+        elif self._arrived_count == self._num_parties:
+            # All remaining parties are already waiting — release them
+            self._generation += 1
+            self._arrived_count = 0
+            self._event.set()
+            self._event.clear()
+
+    async def wait_for_next_round(self) -> int:
+        """Wait for all trajectories to finish their tool calls before starting the next generation round.
+
+        Returns the generation number that was released (monotonically increasing).
+        """
+        gen = self._generation
+        self._arrived_count += 1
+
+        if self._arrived_count == self._num_parties:
+            # Last trajectory to arrive — advance generation, release everyone, reset barrier
+            self._generation += 1
+            self._arrived_count = 0
+            self._event.set()
+            # Immediately clear the event so the next round's waiters block again
+            self._event.clear()
+        else:
+            # Wait until the generation advances past our recorded gen
+            while self._generation == gen:
+                self._event.clear()
+                await self._event.wait()
+
+        return self._generation
+
+
 @ray.remote
 class GlobalRequestLoadBalancer:
     """Global sticky-session + in-flight load balancer shared by all AgentLoopWorkers."""
@@ -604,6 +683,22 @@ class AgentLoopWorker:
             batch.meta_info.get("global_steps", -1), index.tolist(), batch.meta_info.get("validate", False)
         )
 
+        # Round-barrier synchronization for multi-turn rollout.
+        # When enabled, all trajectories pause at each generation turn boundary
+        # until every trajectory has finished its tool call, then all submit
+        # their next generation request simultaneously.  This lets SGLang batch
+        # all requests efficiently instead of processing them in staggered
+        # small groups (the cascading stagger effect that causes poor GPU
+        # utilization in later rounds).
+        round_barrier_size = config.multi_turn.round_barrier_size if config.multi_turn else 0
+        if round_barrier_size > 0 and len(batch) > 1:
+            # Auto mode: use the full batch as the barrier group
+            barrier_size = round_barrier_size if round_barrier_size > 0 else len(batch)
+            barrier_size = min(barrier_size, len(batch))
+            round_barrier = _RoundBarrier(barrier_size)
+        else:
+            round_barrier = None
+
         try:
             tasks = []
             for i in range(len(batch)):
@@ -611,7 +706,13 @@ class AgentLoopWorker:
                 kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
                 tasks.append(
                     asyncio.create_task(
-                        self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
+                        self._run_agent_loop(
+                            sampling_params,
+                            trajectory_info[i],
+                            trace=trace_this_sample,
+                            round_barrier=round_barrier,
+                            **kwargs,
+                        )
                     )
                 )
             outputs = await asyncio.gather(*tasks)
@@ -636,6 +737,7 @@ class AgentLoopWorker:
         *,
         agent_name: str,
         trace: bool = True,
+        round_barrier: Optional[_RoundBarrier] = None,
         **kwargs,
     ) -> _InternalAgentLoopOutput:
         with rollout_trace_attr(
@@ -660,7 +762,7 @@ class AgentLoopWorker:
                 dataset_cls=self.dataset_cls,
                 data_config=DictConfigWrap(self.config.data),
             )
-            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
+            output: AgentLoopOutput = await agent_loop.run(sampling_params, round_barrier=round_barrier, **kwargs)
             return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:

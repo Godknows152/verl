@@ -85,6 +85,14 @@ class MultiTurnConfig(BaseConfig):
     tokenization_sanity_check_mode: str = "strict"
     format: str = "hermes"
     num_repeat_rollouts: Optional[int] = None
+    # Round-barrier synchronization: pause all trajectories at each generation
+    # turn boundary until every trajectory has finished its tool call, then
+    # submit all generation requests simultaneously so SGLang can batch them
+    # efficiently.  This eliminates the cascading stagger effect where later
+    # rounds have fewer concurrent requests and poor GPU utilization.
+    # Set to 0 to disable (default), or a positive integer to enable with that
+    # many trajectories as the barrier group size (0 = auto = all trajectories).
+    round_barrier_size: int = 0
 
 
 @dataclass
