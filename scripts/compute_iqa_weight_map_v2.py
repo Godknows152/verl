@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Compute degradation-action-aware IQA weight map (v2).
+Compute degradation-action-aware IQA weight map (v2/v3).
 
 Unlike v1 (which only measures z-score deficit on degraded images),
-v2 runs each restoration tool on sampled images and measures per-metric
+v2/v3 runs each restoration tool on sampled images and measures per-metric
 IQA improvements.  The weight for each metric is determined by how well
 that metric distinguishes targeted (degradation-specific) tools from
 generic (general-purpose) tools:
@@ -14,14 +14,27 @@ Metrics where targeted tools outperform generic ones receive higher
 weights, so that the IQA reward naturally favors degradation-specific
 tools under the new weighting scheme.
 
+v3 improvements over v2:
+  - ``max_weight_cap``: caps any single metric weight to prevent dominance
+    (e.g. NIQE taking 84% of total weight).  After capping, weights are
+    re-normalized so they still sum to 1.
+  - Higher default ``uniform_mix`` (0.5 vs 0.2): more shrinkage toward
+    uniform weights, ensuring general-purpose tools still receive fair
+    reward for genuine IQA improvements on other metrics.
+  - Lower ``importance_coeff`` (0.1 vs 0.3): reduces the contribution of
+    absolute targeted improvement, which previously amplified NIQE's
+    dominance even when discriminability was moderate.
+
 Usage:
     python scripts/compute_iqa_weight_map_v2.py \
         --parquet data/restoration/train.parquet \
         --stats_json data/restoration/iqa_stats.json \
-        --output_json data/restoration/iqa_weight_map_v2.json \
+        --output_json data/restoration/iqa_weight_map_v3.json \
         --device cuda:0 \
         --iqa_device cuda:3 \
-        --samples_per_type 32
+        --samples_per_type 32 \
+        --uniform_mix 0.5 \
+        --max_weight_cap 0.4
 """
 
 import argparse
@@ -117,6 +130,8 @@ def compute_discriminability_weights(
     targeted_deltas: np.ndarray,
     generic_deltas: np.ndarray,
     uniform_mix: float,
+    max_weight_cap: float | None = None,
+    importance_coeff: float = 0.1,
 ) -> dict:
     """Compute weight vector based on discriminability of targeted vs generic tools.
 
@@ -126,6 +141,17 @@ def compute_discriminability_weights(
         generic_deltas:  Array of shape (N_generic, 5) — per-metric IQA deltas
                          from generic tools.
         uniform_mix:     Shrinkage toward uniform weights in [0, 1].
+                         Higher values make weights more balanced, preventing
+                         any single metric from dominating.  Recommended: 0.5.
+        max_weight_cap:  Optional cap on any single metric's final weight.
+                         If set, any weight exceeding the cap is clipped to the
+                         cap value, and all weights are re-normalized to sum to 1.
+                         This prevents NIQE or any other metric from taking 80%+
+                         of total weight.  Recommended: 0.4.
+        importance_coeff: Coefficient for the importance term (absolute targeted
+                         improvement).  Lower values reduce the amplification of
+                         metrics that have large absolute deltas but moderate
+                         discriminability.  Recommended: 0.1 (was 0.3 in v2).
 
     Returns:
         Dict with weight computation details.
@@ -144,10 +170,10 @@ def compute_discriminability_weights(
     # Here we use the absolute targeted improvement as a proxy for "importance".
     importance = np.maximum(0.0, targeted_mean)
 
-    # Combine: weight = positive_signal + importance * 0.3
-    # This ensures that even if discriminability is zero for some metric,
-    # it still gets some weight if targeted tools improve it substantially.
-    combined_signal = positive_signal + importance * 0.3
+    # Combine: weight = positive_signal + importance * importance_coeff
+    # Lower importance_coeff reduces amplification of metrics with large absolute
+    # deltas but moderate discriminability (e.g. NIQE).
+    combined_signal = positive_signal + importance * importance_coeff
 
     if combined_signal.sum() <= 1e-8:
         data_weight = _UNIFORM_WEIGHT.copy()
@@ -156,7 +182,17 @@ def compute_discriminability_weights(
 
     # Shrink toward uniform to avoid overfitting
     final_weight = (1.0 - uniform_mix) * data_weight + uniform_mix * _UNIFORM_WEIGHT
-    final_weight = final_weight / final_weight.sum()
+
+    # Apply max_weight_cap if specified
+    if max_weight_cap is not None and max_weight_cap > 0:
+        capped_weight = np.minimum(final_weight, max_weight_cap)
+        # Re-normalize so weights still sum to 1
+        if capped_weight.sum() > 1e-8:
+            final_weight = capped_weight / capped_weight.sum()
+        else:
+            final_weight = _UNIFORM_WEIGHT.copy()
+    else:
+        final_weight = final_weight / final_weight.sum()
 
     return {
         'targeted_mean_delta': targeted_mean.tolist(),
@@ -164,8 +200,11 @@ def compute_discriminability_weights(
         'discriminability': discriminability.tolist(),
         'positive_signal': positive_signal.tolist(),
         'importance': importance.tolist(),
+        'importance_coeff': float(importance_coeff),
         'combined_signal': combined_signal.tolist(),
         'data_weight': data_weight.tolist(),
+        'pre_cap_weight': ((1.0 - uniform_mix) * data_weight + uniform_mix * _UNIFORM_WEIGHT).tolist(),
+        'max_weight_cap': max_weight_cap,
         'final_weight': final_weight.tolist(),
     }
 
@@ -199,8 +238,16 @@ def main():
         help='Number of images to sample per degradation type'
     )
     parser.add_argument(
-        '--uniform_mix', type=float, default=0.2,
-        help='Shrinkage toward uniform weights in [0,1]'
+        '--uniform_mix', type=float, default=0.5,
+        help='Shrinkage toward uniform weights in [0,1]. Default 0.5 (v3).'
+    )
+    parser.add_argument(
+        '--max_weight_cap', type=float, default=0.4,
+        help='Cap on any single metric weight. None/0 to disable. Default 0.4 (v3).'
+    )
+    parser.add_argument(
+        '--importance_coeff', type=float, default=0.1,
+        help='Coefficient for importance term. Default 0.1 (v3, was 0.3 in v2).'
     )
     parser.add_argument(
         '--seed', type=int, default=42,
@@ -218,6 +265,10 @@ def main():
 
     if not (0.0 <= args.uniform_mix <= 1.0):
         raise ValueError('--uniform_mix must be in [0, 1]')
+    if args.max_weight_cap is not None and args.max_weight_cap < 0:
+        raise ValueError('--max_weight_cap must be >= 0 or None')
+    if args.importance_coeff < 0:
+        raise ValueError('--importance_coeff must be >= 0')
 
     rng = np.random.default_rng(args.seed)
     actions_to_run = args.actions or ALL_RESTORATION_ACTIONS
@@ -334,7 +385,11 @@ def main():
         targeted_deltas = np.array(targeted_delta_rows, dtype=np.float64) if targeted_delta_rows else np.zeros((0, 5))
         generic_deltas = np.array(generic_delta_rows, dtype=np.float64) if generic_delta_rows else np.zeros((0, 5))
 
-        result = compute_discriminability_weights(targeted_deltas, generic_deltas, args.uniform_mix)
+        result = compute_discriminability_weights(
+            targeted_deltas, generic_deltas, args.uniform_mix,
+            max_weight_cap=args.max_weight_cap if args.max_weight_cap > 0 else None,
+            importance_coeff=args.importance_coeff,
+        )
         weight_map[degradation_type] = result['final_weight']
 
         # Compute per-action summary
@@ -372,8 +427,11 @@ def main():
                     'discriminability': float(result['discriminability'][idx]),
                     'positive_signal': float(result['positive_signal'][idx]),
                     'importance': float(result['importance'][idx]),
+                    'importance_coeff': float(result['importance_coeff']),
                     'combined_signal': float(result['combined_signal'][idx]),
                     'data_weight': float(result['data_weight'][idx]),
+                    'pre_cap_weight': float(result['pre_cap_weight'][idx]),
+                    'max_weight_cap': float(result['max_weight_cap']),
                     'final_weight': float(result['final_weight'][idx]),
                 }
                 for idx, metric_name in enumerate(_METRIC_NAMES)
@@ -383,11 +441,13 @@ def main():
 
     # Step 6: Save output
     payload = {
-        'version': 2,
-        'method': 'discriminability_targeted_vs_generic_with_uniform_shrinkage',
+        'version': 3,
+        'method': 'discriminability_targeted_vs_generic_with_capped_shrinkage',
         'normalization_stats_path': str(Path(args.stats_json).expanduser().resolve()),
         'metric_order': list(_METRIC_NAMES),
         'uniform_mix': float(args.uniform_mix),
+        'max_weight_cap': float(args.max_weight_cap),
+        'importance_coeff': float(args.importance_coeff),
         'default_weight': _UNIFORM_WEIGHT.tolist(),
         'weights': weight_map,
         'details': details,

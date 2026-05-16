@@ -41,7 +41,9 @@ tools:
       iqa_stats_path: data/restoration/iqa_stats.json
       # Optional data-driven metric weights generated from local training data.
       # Without this file, the tool falls back to the legacy hard-coded map.
-      iqa_weight_map_path: data/restoration/iqa_weight_map_v2.json
+      # v3: capped discriminability weights (uniform_mix=0.6, max_weight_cap=0.35)
+      # NIQE capped to ~35-42% (was 73-84% in v2), giving general tools fair reward.
+      iqa_weight_map_path: data/restoration/iqa_weight_map_v3.json
       # alpha * marginal_improvement + (1-alpha) * identity_improvement
       # All thresholds below are interpreted in normalized IQA space.
       alpha: 0.9
