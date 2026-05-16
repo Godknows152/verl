@@ -58,4 +58,5 @@ $PYTHON_BIN -u -m verl.trainer.main_ppo \
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \
     trainer.experiment_name="multiturn_grpo_2gpu_$(date +%m%d)" \
+    trainer.default_local_dir="checkpoints/verl/multiturn_grpo_2gpu/$(date +%m%d%H%M)" \
     "$@" 2>&1 | tee "$LOG_FILE"

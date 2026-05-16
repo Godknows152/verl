@@ -45,28 +45,28 @@ data:
 algorithm:
   adv_estimator: grpo
   kl_ctrl:
-    kl_coef: 0.02
+    kl_coef: 0.12
 
 # ---------------------------------------------------------------------------
 # Actor / Rollout / Ref
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
+    path: checkpoints/merged/Train3/Step27
 
   actor:
     optim:
-      lr: 5.0e-5
+      lr: 3.0e-5
     entropy_coeff: 0.01
     ppo_epochs: 2
     use_kl_loss: true
-    kl_loss_coef: 0.02
+    kl_loss_coef: 0.12
     fsdp_config:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
     ppo_mini_batch_size: 4
-    ppo_micro_batch_size_per_gpu: 4
+    ppo_micro_batch_size_per_gpu: 2
 
   rollout:
     name: sglang
@@ -91,8 +91,8 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 6
-      max_assistant_turns: 7
+      max_user_turns: 7
+      max_assistant_turns: 6
       # Round-barrier synchronization: all trajectories wait at each generation
       # round boundary until every trajectory has finished its tool call, then
       # submit their next generation request simultaneously.  This lets SGLang
@@ -117,7 +117,9 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_2gpu
-  resume_mode: auto
+  # resume_mode: resume_path
+  # resume_from_path: xxx
+  resume_mode: disable
   default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
   # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型

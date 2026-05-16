@@ -544,17 +544,10 @@ class RestorationTool(BaseTool):
                 f"Consecutive uses of '{action}': {consecutive_action_count}. "
                 "Repeating the same tool without clear gains is discouraged."
             )
-        # Affinity hint: confirm good choices or suggest better alternatives.
-        if degradation_type:
-            affinity_map = DEGRADATION_ACTION_AFFINITY.get(degradation_type, {})
-            if affinity_map.get(action, 0.0) >= 0.8:
-                lines.append(f"'{action}' is well-suited for {degradation_type} degradation.")
-            elif action not in affinity_map and action != 'stop':
-                recommended = [a for a, s in sorted(affinity_map.items(), key=lambda x: -x[1])][:3]
-                if recommended:
-                    lines.append(
-                        f"For {degradation_type} degradation, consider using: {', '.join(recommended)}."
-                    )
+        # NOTE: degradation-type affinity hints are intentionally omitted from the
+        # feedback text.  The model must learn to diagnose the degradation and
+        # choose appropriate tools on its own — revealing the degradation type or
+        # recommending specific actions would shortcut that learning process.
         if step >= self.stop_min_step and marginal <= self.repeat_low_gain_threshold:
             lines.append(
                 "Recent gains are small. Consider stopping now or switch to a different targeted operation."
