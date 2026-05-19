@@ -1,18 +1,17 @@
 # Image Restoration Tool Configuration — 2-GPU variant
 #
 # 与 restoration_tool_config_3gpu.yaml 的区别：
-#   model_devices: [cuda:0, cuda:1] → [cuda:0]（修复模型全部集中在 GPU 0）
-#   iqa_device: cuda:2 → cuda:1（IQA 模型独占 GPU 1）
+#   trainer 使用 GPU 0-1 训练，修复模型与 IQA 模型统一放到 GPU 3
+#   preload=true，训练开始前预加载修复模型，避免采样阶段反复冷启动
 #
-# GPU 分配说明（2 卡版本）：
-#   GPU 0: SGLang rollout + 所有图像修复模型
-#   GPU 1: SGLang rollout + IQA 模型
-#   => GPU 0 承载 SGLang + 修复模型，GPU 1 承载 SGLang + IQA
+# GPU 分配说明（2 卡训练 + 独立工具卡）：
+#   GPU 0-1: SGLang rollout / actor-ref 训练
+#   GPU 3:   所有图像修复模型 + IQA 模型
+#   => GPU 2 保持空闲或供其他进程使用
 #
 # GPU memory management strategy:
-#   To avoid conflicts with SGLang's memory_saver (which can cause
-#   resume_memory_occupation timeouts), dynamic model loading is used:
-#   - preload=false: models are loaded on demand instead of at startup
+#   Restoration and IQA are isolated on GPU 3, so keep restoration models resident:
+#   - preload=true: models are loaded before sampling starts
 #   - auto_unload=false: models stay in memory across steps to avoid reload overhead
 #
 # Usage:
@@ -25,21 +24,19 @@ tools:
   - class_name: "verl.tools.restoration_tool.RestorationTool"
     config:
       type: native
-      # Base device fallback. Actual restoration models are all on GPU 0.
-      device: cuda:0
-      # All restoration models on GPU 0 only.
-      # GPU 1 is reserved exclusively for IQA to avoid memory contention.
-      model_devices: [cuda:0]
+      # Base device fallback. Actual restoration models are all on GPU 3.
+      device: cuda:3
+      # All restoration models on GPU 3 only.
+      # GPU 0-1 remain reserved for SGLang/GRPO training.
+      model_devices: [cuda:3]
       # Directory for intermediate output images
       output_dir: /home/LXJ/tmp/verl_restoration
-      # Use phase-managed loading: preload all models at sampling start,
-      # and unload all models once after sampling finishes.
-      preload: false
+      # Preload restoration models at sampling start and keep them resident.
+      preload: true
       auto_unload: false
-      # IQA reward computation settings: pin IQA to GPU 1.
-      # GPU 1 is exclusively reserved for IQA, keeping it separate from restoration models.
+      # IQA reward computation settings: pin IQA to GPU 3 with restoration models.
       use_iqa: true
-      iqa_device: cuda:1
+      iqa_device: cuda:3
       # Compute frozen local dataset stats first:
       # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet
       normalize_iqa_scores: true

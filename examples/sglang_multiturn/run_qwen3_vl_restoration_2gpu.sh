@@ -3,8 +3,8 @@
 #
 # 与 run_qwen3_vl_restoration.sh 的区别：
 #   - 使用 restoration_multiturn_grpo_2gpu.yaml（2 卡配置）
-#   - GPU 0: SGLang rollout + 所有图像修复模型
-#   - GPU 1: SGLang rollout + IQA 模型
+#   - GPU 0-1: SGLang rollout / actor-ref 训练
+#   - GPU 3: 所有图像修复模型 + IQA 模型
 #   - checkpoint 保存在 checkpoints/verl/multiturn_grpo_2gpu/
 #
 # 使用方式：
@@ -26,6 +26,8 @@ export LD_PRELOAD=/home/LXJ/anaconda3/envs/verl/lib/python3.12/site-packages/nvi
 
 export XFORMERS_IGNORE_FLASH_VERSION_CHECK=1
 export SGLANG_DISABLE_CUDNN_CHECK=1
+# Keep physical GPU 3 visible for restoration/IQA while the trainer allocates GPU 0-1.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/examples/sglang_multiturn/config"
