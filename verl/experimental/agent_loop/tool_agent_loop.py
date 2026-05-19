@@ -428,7 +428,8 @@ class ToolAgentLoop(AgentLoopBase):
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
         """Handle the processing tools state: execute tool calls and prepare tool responses."""
         add_messages: list[dict[str, Any]] = []
-        new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
+        returned_images_this_turn: list[Any] = []
+        use_latest_image_context = getattr(agent_data, "data_source", "") == "restoration"
 
         tasks = []
         tool_call_names = []
@@ -444,8 +445,7 @@ class ToolAgentLoop(AgentLoopBase):
         # We detect it via the metrics dict returned by _call_tool (action == "stop").
         stop_triggered = any(res.get("action") == "stop" for _, _, res in responses)
 
-        # Process tool responses and update multi_modal_data
-        # Removed: agent_data.new_images_this_turn = []
+        # Process tool responses and update multi_modal_data.
         for tool_response, tool_reward, tool_metrics in responses:
             # Create message from tool response
             if tool_response.image or tool_response.video:
@@ -457,12 +457,14 @@ class ToolAgentLoop(AgentLoopBase):
                         "data. Plase use a vlm as the base model."
                     )
                 content = []
-                if tool_response.image:
+                if tool_response.image and not use_latest_image_context:
                     content.append({"type": "image"})
                 if tool_response.video:
                     content.append({"type": "video"})
                 if tool_response.text:
                     content.append({"type": "text", "text": tool_response.text})
+                if tool_response.image and use_latest_image_context and not content:
+                    content.append({"type": "text", "text": "Current image updated."})
                 message = {"role": "tool", "content": content}
             else:
                 # Text-only content
@@ -472,16 +474,15 @@ class ToolAgentLoop(AgentLoopBase):
 
             # Handle image data
             if tool_response.image:
-                # Add new image data
                 if isinstance(tool_response.image, list):
                     # Ensure all elements in the list are valid image objects
                     for img in tool_response.image:
                         if img is not None:  # Add a check to ensure the image is not None
-                            new_images_this_turn.append(img)  # Using local variable
+                            returned_images_this_turn.append(img)
                 else:
                     # Ensure the image is not None
                     if tool_response.image is not None:
-                        new_images_this_turn.append(tool_response.image)  # Using local variable
+                        returned_images_this_turn.append(tool_response.image)
 
             # Handle video data
             if tool_response.video:
@@ -509,9 +510,17 @@ class ToolAgentLoop(AgentLoopBase):
                 None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
             )
         else:
-            # Note that we have to pass None to the images and videos if there are no new images / videos
-            # to stay compatible with downstream image processing logic!
-            images = new_images_this_turn if new_images_this_turn else None
+            if use_latest_image_context:
+                # Tool-returned restoration images replace the current visual
+                # state instead of adding new image markers to the text history.
+                # The prompt keeps the original image slot and binds it to the
+                # latest image for the next generation round, while text
+                # feedback preserves action history.
+                images = None
+            else:
+                # Pass None when there are no new images / videos to stay
+                # compatible with downstream image processing logic.
+                images = returned_images_this_turn if returned_images_this_turn else None
             videos = None
             self._log_image_alignment(
                 stage="processing_tools_tool_response_before_apply_chat_template",
@@ -530,16 +539,21 @@ class ToolAgentLoop(AgentLoopBase):
             return AgentState.TERMINATED
         # Update prompt_ids and response_mask
 
-        if new_images_this_turn:
-            if agent_data.image_data is None:
-                agent_data.image_data = []
-            elif not isinstance(agent_data.image_data, list):
-                agent_data.image_data = [agent_data.image_data]
-            for img in new_images_this_turn:
-                agent_data.image_data.append(img)
+        if returned_images_this_turn:
+            if use_latest_image_context:
+                # Keep only the newest restoration image in context.  This avoids
+                # repeatedly feeding every intermediate result back into the VLM.
+                agent_data.image_data = [returned_images_this_turn[-1]]
+            else:
+                if agent_data.image_data is None:
+                    agent_data.image_data = []
+                elif not isinstance(agent_data.image_data, list):
+                    agent_data.image_data = [agent_data.image_data]
+                for img in returned_images_this_turn:
+                    agent_data.image_data.append(img)
 
         self._log_image_alignment(
-            stage="processing_tools_after_message_and_image_append",
+            stage="processing_tools_after_message_and_image_update",
             messages=agent_data.messages,
             images=agent_data.image_data,
             request_id=agent_data.request_id,
