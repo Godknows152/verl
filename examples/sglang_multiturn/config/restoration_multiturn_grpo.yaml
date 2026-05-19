@@ -94,7 +94,7 @@ actor_rollout_ref:
     multi_turn:
       enable: true
       max_user_turns: 6
-      max_assistant_turns: 7
+      max_assistant_turns: 6
       # Round-barrier synchronization: all trajectories wait at each generation
       # round boundary until every trajectory has finished its tool call, then
       # submit their next generation request simultaneously.  This lets SGLang

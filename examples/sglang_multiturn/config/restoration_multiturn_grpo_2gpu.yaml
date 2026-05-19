@@ -64,7 +64,7 @@ actor_rollout_ref:
     fsdp_config:
       model_dtype: bfloat16
       param_offload: true
-      optimizer_offload: true
+      optimizer_offload: off
     ppo_mini_batch_size: 4
     ppo_micro_batch_size_per_gpu: 2
 
@@ -79,7 +79,7 @@ actor_rollout_ref:
     # SGLang uses 2 GPUs (0-1); GPU 0 additionally hosts restoration models,
     # GPU 1 additionally hosts IQA models.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.475
+    gpu_memory_utilization: 0.3
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
