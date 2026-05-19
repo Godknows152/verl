@@ -6,11 +6,11 @@
 #   - data.train_batch_size: 16 → 8（随 GPU 数量等比缩减）
 #   - actor.ppo_mini_batch_size: 8 → 4
 #   - rollout.multi_turn.tool_config_path: 指向 2-GPU 专用 tool config
-#     （训练使用 cuda:0-1，修复模型与 IQA 模型统一放到 cuda:3）
+#     （修复模型全部在 cuda:0，IQA 独占 cuda:1）
 #
-# GPU 分配说明（2 卡训练 + 独立工具卡）：
-#   GPU 0-1: SGLang rollout / actor-ref 训练
-#   GPU 3:   所有图像修复模型 + IQA 模型
+# GPU 分配说明（2 卡版本）：
+#   GPU 0: SGLang rollout (TP=1) + 所有图像修复模型
+#   GPU 1: SGLang rollout (TP=1) + IQA 模型
 #
 # Usage:
 #   cd /home/LXJ/Python_Projects/verl
@@ -63,8 +63,8 @@ actor_rollout_ref:
     kl_loss_coef: 0.12
     fsdp_config:
       model_dtype: bfloat16
-      param_offload: off
-      optimizer_offload: off
+      param_offload: true
+      optimizer_offload: false
     ppo_mini_batch_size: 4
     ppo_micro_batch_size_per_gpu: 2
 
@@ -76,9 +76,10 @@ actor_rollout_ref:
     # GRPO requires n > 1 to compute group-relative advantages
     n: 3
     tensor_model_parallel_size: 1
-    # SGLang uses 2 GPUs (0-1); restoration and IQA models are pinned to GPU 3.
+    # SGLang uses 2 GPUs (0-1); GPU 0 additionally hosts restoration models,
+    # GPU 1 additionally hosts IQA models.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.3
+    gpu_memory_utilization: 0.4
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
@@ -101,7 +102,7 @@ actor_rollout_ref:
       # 2-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
       round_barrier_size: 24
       format: hermes
-      # 使用 2-GPU 专用 tool config（修复模型与 IQA 模型都在 cuda:3）
+      # 使用 2-GPU 专用 tool config（修复模型在 cuda:0，IQA 在 cuda:1）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml
 
   ref:
@@ -116,12 +117,12 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_2gpu
-  resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05170952/global_step_27
-  # resume_mode: disable
+  # resume_mode: resume_path
+  # resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05170952/global_step_27
+  resume_mode: disable
   default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
-  # 使用 2 张 GPU (0-1) 训练；修复模型与 IQA 模型由 tool config 固定到 GPU 3
+  # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型
   n_gpus_per_node: 2
   nnodes: 1
   save_freq: 3
