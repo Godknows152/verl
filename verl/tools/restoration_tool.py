@@ -136,6 +136,9 @@ STOP_EARLY_PENALTY = -1.0
 STOP_CONTINUE_PENALTY = -0.5
 STOP_RECENT_REWARD_WINDOW = 2
 STOP_RECENT_REWARD_THRESHOLD = 0.25
+REWARD_MODE_STEP_MIXED_V1 = "step_mixed_v1"
+REWARD_MODE_FINAL_IQA_V2 = "final_iqa_v2"
+SUPPORTED_REWARD_MODES = {REWARD_MODE_STEP_MIXED_V1, REWARD_MODE_FINAL_IQA_V2}
 
 # Module-level caches
 _toolkit_instance = None
@@ -316,9 +319,23 @@ class RestorationTool(BaseTool):
         self.iqa_stats_path = config.get("iqa_stats_path", None)
         self.iqa_qalign_path = config.get("iqa_qalign_path", None)
         self.iqa_weight_map_path = config.get("iqa_weight_map_path", None)
+        self.reward_mode = str(config.get("reward_mode", REWARD_MODE_STEP_MIXED_V1))
+        if self.reward_mode not in SUPPORTED_REWARD_MODES:
+            raise ValueError(
+                f"Unsupported reward_mode={self.reward_mode!r}; "
+                f"expected one of {sorted(SUPPORTED_REWARD_MODES)}"
+            )
+        self.suppress_tool_call_reward = bool(
+            config.get("suppress_tool_call_reward", self.reward_mode == REWARD_MODE_FINAL_IQA_V2)
+        )
         self.alpha = float(config.get("alpha", 0.9))       # marginal-improvement weight
         self.beta = 1.0 - self.alpha                       # identity-improvement weight
         self.reward_scale = float(config.get("reward_scale", 1.0))
+        self.final_iqa_reward_scale = float(config.get("final_iqa_reward_scale", self.reward_scale))
+        self.final_iqa_regression_penalty_scale = float(
+            config.get("final_iqa_regression_penalty_scale", 1.0)
+        )
+        self.final_iqa_step_penalty = float(config.get("final_iqa_step_penalty", 0.0))
         self.affinity_bonus_scale = float(config.get("affinity_bonus_scale", 0.0))
         self.repeat_action_penalty = float(config.get("repeat_action_penalty", REPEAT_ACTION_PENALTY))
         self.repeat_low_gain_penalty = float(config.get("repeat_low_gain_penalty", REPEAT_LOW_GAIN_PENALTY))
@@ -357,7 +374,12 @@ class RestorationTool(BaseTool):
         logger.info(
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
             f"use_iqa={self.use_iqa}, normalize_iqa_scores={self.normalize_iqa_scores}, "
+            f"reward_mode={self.reward_mode}, "
+            f"suppress_tool_call_reward={self.suppress_tool_call_reward}, "
             f"alpha={self.alpha}, reward_scale={self.reward_scale}, "
+            f"final_iqa_reward_scale={self.final_iqa_reward_scale}, "
+            f"final_iqa_regression_penalty_scale={self.final_iqa_regression_penalty_scale}, "
+            f"final_iqa_step_penalty={self.final_iqa_step_penalty}, "
             f"affinity_bonus_scale={self.affinity_bonus_scale}, "
             f"repeat_action_penalty={self.repeat_action_penalty}, "
             f"repeat_low_gain_penalty={self.repeat_low_gain_penalty}, "
@@ -422,6 +444,7 @@ class RestorationTool(BaseTool):
         action: str,
         actions_history: list[str],
         degradation_type: str | None = None,
+        best_identity_delta: float = 0.0,
     ) -> dict[str, float]:
         """Compute reward and diagnostics for a restoration step.
 
@@ -429,6 +452,17 @@ class RestorationTool(BaseTool):
             degradation_type: Optional degradation category (e.g. 'fog', 'rain_streak').
                 Used to compute an affinity bonus when the action matches the degradation.
         """
+        if self.reward_mode == REWARD_MODE_FINAL_IQA_V2:
+            return self._calculate_final_iqa_reward_v2(
+                prev_scores=prev_scores,
+                curr_scores=curr_scores,
+                identity_scores=identity_scores,
+                weights=weights,
+                action=action,
+                actions_history=actions_history,
+                best_identity_delta=best_identity_delta,
+            )
+
         prev_t = torch.tensor(prev_scores, dtype=torch.float32)
         curr_t = torch.tensor(curr_scores, dtype=torch.float32)
         iden_t = torch.tensor(identity_scores, dtype=torch.float32)
@@ -473,6 +507,70 @@ class RestorationTool(BaseTool):
             "repeat_penalty": float(repeat_penalty),
             "affinity_bonus": float(affinity_bonus),
             "consecutive_action_count": float(repeat_count + 1),
+            "best_identity_delta": float(max(best_identity_delta, identity)),
+            "best_improvement": float(max(0.0, identity - best_identity_delta)),
+            "regression_penalty": 0.0,
+            "step_penalty": 0.0,
+        }
+
+    def _calculate_final_iqa_reward_v2(
+        self,
+        prev_scores: list[float],
+        curr_scores: list[float],
+        identity_scores: list[float],
+        weights: list[float],
+        action: str,
+        actions_history: list[str],
+        best_identity_delta: float,
+    ) -> dict[str, float]:
+        """Reward improvements to the trajectory-best final IQA score.
+
+        The summed v2 reward tracks the best weighted IQA improvement achieved
+        so far, instead of paying every marginal step independently. This keeps
+        the objective aligned with the final restored image quality and avoids
+        rewarding extra tool calls that do not produce a new best image.
+        """
+        prev_t = torch.tensor(prev_scores, dtype=torch.float32)
+        curr_t = torch.tensor(curr_scores, dtype=torch.float32)
+        iden_t = torch.tensor(identity_scores, dtype=torch.float32)
+        w_t = torch.tensor(weights, dtype=torch.float32)
+
+        marginal = ((curr_t - prev_t) * w_t).sum().item()
+        identity = ((curr_t - iden_t) * w_t).sum().item()
+        best_improvement = max(0.0, identity - best_identity_delta)
+        regression = max(0.0, best_identity_delta - identity)
+        base_reward = best_improvement * self.final_iqa_reward_scale
+        regression_penalty = regression * self.final_iqa_regression_penalty_scale
+
+        repeat_count = self._count_consecutive_repeats(actions_history, action)
+        repeat_penalty = 0.0
+        if repeat_count > 0:
+            repeat_penalty += self.repeat_action_penalty * repeat_count
+            if marginal <= self.repeat_low_gain_threshold:
+                repeat_penalty += self.repeat_low_gain_penalty * repeat_count
+
+        reward = float(torch.clamp(
+            torch.tensor(
+                base_reward
+                - regression_penalty
+                - self.final_iqa_step_penalty
+                - repeat_penalty
+            ),
+            -10.0,
+            10.0,
+        ).item())
+        return {
+            "reward": reward,
+            "base_reward": float(base_reward),
+            "marginal": float(marginal),
+            "identity": float(identity),
+            "repeat_penalty": float(repeat_penalty),
+            "affinity_bonus": 0.0,
+            "consecutive_action_count": float(repeat_count + 1),
+            "best_identity_delta": float(max(best_identity_delta, identity)),
+            "best_improvement": float(best_improvement),
+            "regression_penalty": float(regression_penalty),
+            "step_penalty": float(self.final_iqa_step_penalty),
         }
 
     def _calculate_identity_delta(
@@ -524,6 +622,10 @@ class RestorationTool(BaseTool):
         identity_delta: float,
         consecutive_action_count: int,
         degradation_type: str | None = None,
+        best_identity_delta: float | None = None,
+        best_improvement: float | None = None,
+        regression_penalty: float = 0.0,
+        step_penalty: float = 0.0,
     ) -> str:
         """Generate human-readable feedback for the model's next turn.
 
@@ -531,6 +633,47 @@ class RestorationTool(BaseTool):
             degradation_type: Optional degradation category for affinity hints.
         """
         history_str = " → ".join(actions_history) if actions_history else "none"
+
+        if self.reward_mode == REWARD_MODE_FINAL_IQA_V2:
+            best_identity_delta = identity_delta if best_identity_delta is None else best_identity_delta
+            best_improvement = 0.0 if best_improvement is None else best_improvement
+            lines = [
+                f"Step {step}: Applied '{action}'.",
+                f"Step reward: {reward:.4f}",
+                f"Current improvement over original image: {identity_delta:.4f}",
+                f"Trajectory-best improvement over original image: {best_identity_delta:.4f}",
+                f"New best-IQA gain from this action: {best_improvement:.4f}",
+                f"Weighted marginal improvement: {marginal:.4f}",
+                f"Action history: {history_str}",
+            ]
+            if regression_penalty > 0.0:
+                lines.append(
+                    f"This action fell below the trajectory-best IQA "
+                    f"(regression penalty: {regression_penalty:.4f})."
+                )
+            if step_penalty > 0.0:
+                lines.append(f"Each extra tool call has a step cost of {step_penalty:.4f}.")
+            if consecutive_action_count > 1:
+                lines.append(
+                    f"Consecutive uses of '{action}': {consecutive_action_count}. "
+                    "Repeating the same tool without a new best IQA is discouraged."
+                )
+            if best_improvement > 0.0:
+                lines.append(
+                    "This action set a new trajectory-best IQA. Continue only if another "
+                    "tool is likely to raise the best score further; otherwise stop."
+                )
+            elif step >= self.stop_min_step:
+                lines.append(
+                    "This action did not improve the trajectory-best IQA. Prefer stopping "
+                    "or switching to a different targeted operation instead of repeating it."
+                )
+            else:
+                lines.append(
+                    "Continue exploring only if the next action is likely to improve the "
+                    "trajectory-best IQA."
+                )
+            return "\n".join(lines)
 
         lines = [
             f"Step {step}: Applied '{action}'.",
@@ -608,6 +751,7 @@ class RestorationTool(BaseTool):
             "scores_history": [identity_scores],
             "rewards_history": [],
             "marginals_history": [],
+            "best_identity_delta": 0.0,
             "identity_scores": identity_scores,
             "weights": weights,
             "degradation_type": degradation_type,
@@ -688,7 +832,9 @@ class RestorationTool(BaseTool):
                 {
                     "action": "stop",
                     "step": step,
+                    "reward_mode": self.reward_mode,
                     "identity_delta": identity_delta,
+                    "best_identity_delta": float(instance.get("best_identity_delta", identity_delta)),
                     "recent_reward_mean": stop_info["recent_reward_mean"],
                     "plateau": stop_info["plateau"],
                     "good_enough": stop_info["good_enough"],
@@ -732,6 +878,7 @@ class RestorationTool(BaseTool):
                 action=action,
                 actions_history=instance["actions_history"],
                 degradation_type=instance.get("degradation_type"),
+                best_identity_delta=float(instance.get("best_identity_delta", 0.0)),
             )
             reward = float(reward_info["reward"])
 
@@ -743,6 +890,7 @@ class RestorationTool(BaseTool):
             instance["scores_history"].append(curr_scores)
             instance["rewards_history"].append(reward)
             instance["marginals_history"].append(float(reward_info["marginal"]))
+            instance["best_identity_delta"] = float(reward_info["best_identity_delta"])
 
             identity_delta = self._calculate_identity_delta(curr_scores, identity_scores, weights)
 
@@ -756,6 +904,10 @@ class RestorationTool(BaseTool):
                 identity_delta=identity_delta,
                 consecutive_action_count=int(reward_info["consecutive_action_count"]),
                 degradation_type=instance.get("degradation_type"),
+                best_identity_delta=float(reward_info["best_identity_delta"]),
+                best_improvement=float(reward_info["best_improvement"]),
+                regression_penalty=float(reward_info["regression_penalty"]),
+                step_penalty=float(reward_info["step_penalty"]),
             )
 
             # Build response with restored image
@@ -775,17 +927,23 @@ class RestorationTool(BaseTool):
                 f"Instance {instance_id}: '{action}' done, step={instance['step']}, "
                 f"reward={reward:.4f}, marginal={reward_info['marginal']:.4f}, "
                 f"identity={reward_info['identity']:.4f}, "
+                f"best_identity_delta={reward_info['best_identity_delta']:.4f}, "
                 f"repeat_penalty={reward_info['repeat_penalty']:.4f}, "
                 f"affinity_bonus={reward_info['affinity_bonus']:.4f}, "
                 f"output={output_path}"
             )
-            return response, reward, {
+            metrics = {
                 "action": action,
                 "step": instance["step"],
                 "reward": reward,
+                "reward_mode": self.reward_mode,
                 "base_reward": reward_info["base_reward"],
                 "marginal": reward_info["marginal"],
                 "identity_delta": identity_delta,
+                "best_identity_delta": reward_info["best_identity_delta"],
+                "best_improvement": reward_info["best_improvement"],
+                "regression_penalty": reward_info["regression_penalty"],
+                "step_penalty": reward_info["step_penalty"],
                 "repeat_penalty": reward_info["repeat_penalty"],
                 "affinity_bonus": reward_info["affinity_bonus"],
                 "consecutive_action_count": int(reward_info["consecutive_action_count"]),
@@ -793,6 +951,9 @@ class RestorationTool(BaseTool):
                 "input_path": current_image,
                 "output_path": output_path,
             }
+            if self.suppress_tool_call_reward:
+                metrics["skip_tool_call_reward"] = True
+            return response, reward, metrics
 
         except Exception as e:
             error_msg = f"Restoration error during '{action}': {e}"

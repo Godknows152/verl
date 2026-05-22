@@ -50,12 +50,23 @@ tools:
       # specialized deraining/desnowing tools a fairer reward signal.
       # fog/night weights unchanged from v3.
       iqa_weight_map_path: data/restoration/iqa_weight_map_v4.json
-      # alpha * marginal_improvement + (1-alpha) * identity_improvement
+      # v2 optimizes final restored IQA: a step receives main reward only when
+      # it improves the trajectory-best weighted IQA over the original image.
+      # suppress_tool_call_reward disables the agent-loop's default per-tool
+      # bonus so extra calls are not rewarded without IQA gains.
       # All thresholds below are interpreted in normalized IQA space.
+      reward_mode: final_iqa_v2
+      suppress_tool_call_reward: true
+      # reward_mode: final_iqa_v1
+      # suppress_tool_call_reward: false
       alpha: 0.9
       reward_scale: 4.0
+      final_iqa_reward_scale: 4.0
+      final_iqa_regression_penalty_scale: 1.0
+      final_iqa_step_penalty: 0.05
       # Affinity bonus: reward choosing degradation-specific tools over generic ones.
-      # 0.4 means a high-affinity action gets +0.4 on top of the IQA-based reward.
+      # The scale is added on top of the IQA-based reward in step_mixed_v1.
+      # Ignored by final_iqa_v2; kept here for step_mixed_v1 compatibility.
       affinity_bonus_scale: 0.2
       # Penalize repeating the same tool when weighted z-score gains are already small.
       repeat_action_penalty: 0.75
