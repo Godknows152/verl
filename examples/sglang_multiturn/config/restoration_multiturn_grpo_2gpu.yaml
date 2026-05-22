@@ -64,7 +64,7 @@ actor_rollout_ref:
     fsdp_config:
       model_dtype: bfloat16
       param_offload: true
-      optimizer_offload: false
+      optimizer_offload: true
     ppo_mini_batch_size: 4
     ppo_micro_batch_size_per_gpu: 2
 
@@ -117,9 +117,9 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_2gpu
-  # resume_mode: resume_path
-  # resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05170952/global_step_27
-  resume_mode: disable
+  resume_mode: resume_path
+  resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05201417/global_step_69
+  # resume_mode: disable
   default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
   # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型
