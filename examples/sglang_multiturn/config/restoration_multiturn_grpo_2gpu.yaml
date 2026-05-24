@@ -32,7 +32,7 @@ data:
     - data/restoration/train.parquet
   val_files:
     - data/restoration/test.parquet
-  val_max_samples: 8
+  val_max_samples: 256
   train_batch_size: 8
   max_prompt_length: 2048
   max_response_length: 3072
@@ -118,15 +118,15 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_2gpu
   resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05201417/global_step_69
+  resume_from_path: checkpoints/verl/multiturn_grpo_2gpu/05211931/global_step_111
   # resume_mode: disable
   default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
   # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型
   n_gpus_per_node: 2
   nnodes: 1
-  save_freq: 3
-  test_freq: 10
+  save_freq: 20
+  test_freq: 20
   total_epochs: 3
   max_actor_ckpt_to_keep: 10
   val_before_train: false
