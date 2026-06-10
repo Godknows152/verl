@@ -102,7 +102,7 @@ actor_rollout_ref:
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
       # 4-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
-      round_barrier_size: 99999
+      round_barrier_size: 0
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml

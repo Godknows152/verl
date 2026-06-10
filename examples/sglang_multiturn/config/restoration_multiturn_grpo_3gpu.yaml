@@ -95,7 +95,7 @@ actor_rollout_ref:
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
       # 3-GPU: train_batch_size=6 × n=3 = 18 trajectories per batch
-      round_barrier_size: 18
+      round_barrier_size: 0
       format: hermes
       # 使用 3-GPU 专用 tool config（iqa_device=cuda:2）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml

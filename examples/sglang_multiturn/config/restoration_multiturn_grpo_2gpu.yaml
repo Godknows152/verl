@@ -100,7 +100,7 @@ actor_rollout_ref:
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
       # 2-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
-      round_barrier_size: 24
+      round_barrier_size: 0
       format: hermes
       # 使用 2-GPU 专用 tool config（修复模型在 cuda:0，IQA 在 cuda:1）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml
