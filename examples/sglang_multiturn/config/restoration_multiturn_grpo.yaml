@@ -26,8 +26,8 @@ data:
     - data/restoration/train.parquet
   val_files:
     - data/restoration/test.parquet
-  val_max_samples: 8
-  train_batch_size: 8
+  val_max_samples: 256
+  train_batch_size: 128
   max_prompt_length: 2048
   max_response_length: 3072
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -42,7 +42,7 @@ data:
 algorithm:
   adv_estimator: grpo
   kl_ctrl:
-    kl_coef: 0.02
+    kl_coef: 0.12
 
 # ---------------------------------------------------------------------------
 # Actor / Rollout / Ref
@@ -50,22 +50,22 @@ algorithm:
 actor_rollout_ref:
   model:
     # Update to your actual Qwen3-VL checkpoint path
-    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
+    path: checkpoints/merged/Train4/Step102
 
   actor:
     optim:
-      lr: 5.0e-5
+      lr: 3.0e-5
     entropy_coeff: 0.01
-    ppo_epochs: 2
+    ppo_epochs: 1
     use_kl_loss: true
-    kl_loss_coef: 0.02
+    kl_loss_coef: 0.12
     fsdp_config:
       # Use bf16 to match Flash Attention 2 requirements and reduce memory pressure
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 8
-    ppo_micro_batch_size_per_gpu: 4
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 8
 
   rollout:
     name: sglang
@@ -74,15 +74,15 @@ actor_rollout_ref:
     temperature: 1.0
     disable_multimodal_special_token_generation: true
     # GRPO requires n > 1 to compute group-relative advantages
-    n: 4
+    n: 3
     # TP=1 gives each rollout shard a full model replica on one GPU and maximizes
     # rollout-side parallelism, but it also increases per-GPU memory pressure.
     tensor_model_parallel_size: 1
     # SGLang uses all 4 GPUs (0-3); restoration/IQA models still share residual VRAM,
     # with GPU 3 typically the tightest due to IQA placement.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.575
-    log_prob_micro_batch_size_per_gpu: 4
+    gpu_memory_utilization: 0.4
+    log_prob_micro_batch_size_per_gpu: 2
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
@@ -93,7 +93,7 @@ actor_rollout_ref:
 
     multi_turn:
       enable: true
-      max_user_turns: 6
+      max_user_turns: 7
       max_assistant_turns: 6
       # Round-barrier synchronization: all trajectories wait at each generation
       # round boundary until every trajectory has finished its tool call, then
@@ -101,8 +101,8 @@ actor_rollout_ref:
       # batch requests efficiently and eliminates the cascading stagger effect
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
-      # 4-GPU: train_batch_size=8 × n=4 = 32 trajectories per batch
-      round_barrier_size: 32
+      # 4-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
+      round_barrier_size: 384
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml
@@ -120,8 +120,9 @@ trainer:
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo
   # Resume from a specific checkpoint and keep subsequent saves in the same run directory.
-  resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_0508/global_step_9
+  resume_model: disable
+  # resume_mode: resume_path
+  # resume_from_path: checkpoints/merged/Train4/Step102
   default_local_dir: checkpoints/verl/multiturn_grpo_0508
   log_val_generations: 5
   # Use all 4 GPUs for rollout (GPUs 0-3); restoration/IQA models share remaining VRAM,
@@ -129,8 +130,8 @@ trainer:
   # (num_gpus_per_worker: 0.0 — AgentLoopWorker accesses GPU 3 directly without Ray GPU allocation)
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 3
-  test_freq: 10
+  save_freq: 10
+  test_freq: 20
   total_epochs: 3
   max_actor_ckpt_to_keep: 10
   val_before_train: false

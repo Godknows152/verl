@@ -69,6 +69,19 @@ mkdir -p /home/LXJ/tmp/verl_restoration
 export PYTHONUNBUFFERED=1
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
+# 显式使用 verl conda 环境的 Python，避免调用到系统 python3
+PYTHON_BIN=/home/LXJ/anaconda3/envs/verl/bin/python
+RAY_BIN=/home/LXJ/anaconda3/envs/verl/bin/ray
+
+# Ray 临时目录（session/shared-memory 等），避免撑满 /tmp
+export RAY_TMPDIR="${RAY_TMPDIR:-/home/LXJ/tmp/ray}"
+
+# 清理上次训练残留的 Ray 会话，避免旧 object store/session 占满临时目录。
+"$RAY_BIN" stop --force || true
+mkdir -p "$RAY_TMPDIR"
+find "$RAY_TMPDIR" -maxdepth 1 -mindepth 1 -name 'session_*' -exec rm -rf {} +
+
+
 # ---------------------------------------------------------------------------
 # Launch training (use -u for unbuffered output)
 # ---------------------------------------------------------------------------

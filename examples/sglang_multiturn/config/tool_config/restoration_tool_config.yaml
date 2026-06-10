@@ -7,8 +7,7 @@
 #   To avoid conflicts with SGLang's memory_saver (which can cause
 #   resume_memory_occupation timeouts), dynamic model loading is used:
 #   - preload=false: models are loaded on demand instead of at startup
-#   - auto_unload=true: models are unloaded after each use to free GPU memory
-#   This allows SGLang to reclaim GPU memory when syncing weights.
+#   - auto_unload=false: models stay in memory across steps to avoid reload overhead
 #
 # Usage:
 #   actor_rollout_ref:
@@ -46,10 +45,24 @@ tools:
       # specialized deraining/desnowing tools a fairer reward signal.
       # fog/night weights unchanged from v3.
       iqa_weight_map_path: data/restoration/iqa_weight_map_v4.json
-      # alpha * marginal_improvement + (1-alpha) * identity_improvement
+      # v2 optimizes final restored IQA: a step receives main reward only when
+      # it improves the trajectory-best weighted IQA over the original image.
+      # suppress_tool_call_reward disables the agent-loop's default per-tool
+      # bonus so extra calls are not rewarded without IQA gains.
       # All thresholds below are interpreted in normalized IQA space.
+      # reward_mode: final_iqa_v2
+      # suppress_tool_call_reward: true
+      reward_mode: step_mixed_v1
+      suppress_tool_call_reward: false
       alpha: 0.9
       reward_scale: 4.0
+      final_iqa_reward_scale: 4.0
+      final_iqa_regression_penalty_scale: 1.0
+      final_iqa_step_penalty: 0.05
+      # Affinity bonus: reward choosing degradation-specific tools over generic ones.
+      # The scale is added on top of the IQA-based reward in step_mixed_v1.
+      # Ignored by final_iqa_v2; kept here for step_mixed_v1 compatibility.
+      affinity_bonus_scale: 0.2
       # Penalize repeating the same tool when weighted z-score gains are already small.
       repeat_action_penalty: 0.75
       repeat_low_gain_penalty: 2.0
@@ -65,10 +78,6 @@ tools:
       stop_continue_penalty: -0.4
       stop_recent_reward_window: 2
       stop_recent_reward_threshold: 0.2
-      # Affinity bonus: reward choosing degradation-specific tools over generic ones.
-      # Set to 0 to disable (default). Recommended starting value: 0.3~0.5.
-      # The bonus is added on top of the IQA-based step reward.
-      affinity_bonus_scale: 0.2
     tool_schema:
       type: "function"
       function:

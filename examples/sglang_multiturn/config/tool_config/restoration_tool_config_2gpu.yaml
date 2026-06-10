@@ -49,7 +49,7 @@ tools:
       # NIQE reduced from 42% to 30%; qalign/musiq/clipiqa raised to give
       # specialized deraining/desnowing tools a fairer reward signal.
       # fog/night weights unchanged from v3.
-      iqa_weight_map_path: data/restoration/iqa_weight_map_v3.json
+      iqa_weight_map_path: data/restoration/iqa_weight_map_v4.json
       # v2 optimizes final restored IQA: a step receives main reward only when
       # it improves the trajectory-best weighted IQA over the original image.
       # suppress_tool_call_reward disables the agent-loop's default per-tool
