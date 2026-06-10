@@ -44,12 +44,16 @@ Supported restoration actions:
 - snowmaster: Advanced desnowing
 """
 
+import asyncio
 import json
 import logging
 import os
 import sys
 import torch
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
+from queue import Queue
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -142,6 +146,8 @@ SUPPORTED_REWARD_MODES = {REWARD_MODE_STEP_MIXED_V1, REWARD_MODE_FINAL_IQA_V2}
 
 # Module-level caches
 _toolkit_instance = None
+_runtime_pool_instance = None
+_runtime_pool_config_key = None
 _iqa_instances: dict[tuple[str, bool, str | None, str | None], Any] = {}
 
 
@@ -235,6 +241,180 @@ def get_iqa_scorer(
     return _iqa_instances[cache_key]
 
 
+def _as_device_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
+@dataclass
+class _RestorationRuntimeWorker:
+    index: int
+    device: str
+    iqa_device: str
+    toolkit: Any
+    iqa: Any | None
+
+
+class _RestorationRuntimePool:
+    """One full restoration+IQA runtime replica per configured GPU."""
+
+    def __init__(
+        self,
+        *,
+        worker_devices: list[str],
+        iqa_devices: list[str],
+        models: list[str] | None,
+        preload: bool,
+        auto_unload: bool,
+        use_iqa: bool,
+        normalize_iqa_scores: bool,
+        iqa_stats_path: str | None,
+        iqa_qalign_path: str | None,
+    ):
+        if not worker_devices:
+            raise ValueError("worker_devices must contain at least one device")
+
+        from restoration_tools.agent_tools import RestorationToolkit
+
+        self.workers: list[_RestorationRuntimeWorker] = []
+        self._available_worker_indices: Queue[int] = Queue()
+        self._executor = ThreadPoolExecutor(
+            max_workers=len(worker_devices),
+            thread_name_prefix="restoration-runtime",
+        )
+
+        resolved_iqa_devices = iqa_devices or worker_devices
+        for index, device in enumerate(worker_devices):
+            iqa_device = resolved_iqa_devices[index % len(resolved_iqa_devices)]
+            toolkit = RestorationToolkit(
+                models=models,
+                device=device,
+                load_iqa=False,
+                preload=False,
+                auto_unload=auto_unload,
+                model_devices=[device],
+                model_device_map=None,
+            )
+            iqa = None
+            if use_iqa:
+                iqa = get_iqa_scorer(
+                    device=iqa_device,
+                    normalize_scores=normalize_iqa_scores,
+                    normalization_stats_path=iqa_stats_path,
+                    qalign_path=iqa_qalign_path,
+                )
+            worker = _RestorationRuntimeWorker(
+                index=index,
+                device=device,
+                iqa_device=iqa_device,
+                toolkit=toolkit,
+                iqa=iqa,
+            )
+            self.workers.append(worker)
+            self._available_worker_indices.put(index)
+
+        if preload:
+            self.preload_models()
+
+        logger.info(
+            "Restoration runtime pool initialized with workers: %s",
+            [
+                {"index": worker.index, "device": worker.device, "iqa_device": worker.iqa_device}
+                for worker in self.workers
+            ],
+        )
+
+    def _run_with_worker(self, fn):
+        worker_index = self._available_worker_indices.get()
+        worker = self.workers[worker_index]
+        try:
+            logger.info(
+                "Dispatching restoration request to worker %s (tool=%s, iqa=%s)",
+                worker.index,
+                worker.device,
+                worker.iqa_device,
+            )
+            return fn(worker)
+        finally:
+            self._available_worker_indices.put(worker_index)
+
+    async def run(self, fn):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._run_with_worker, fn)
+
+    def preload_models(self) -> None:
+        # Model construction touches process-global torch/diffusers/import state.
+        # Keep preload serialized; after models are resident, execute() still
+        # dispatches inference concurrently across runtime workers.
+        for worker in self.workers:
+            logger.info(
+                "Preloading restoration models on worker %s (%s)",
+                worker.index,
+                worker.device,
+            )
+            worker.toolkit.load_models()
+        logger.info("Preloaded restoration models on %d runtime workers", len(self.workers))
+
+    def unload_all_models(self) -> None:
+        futures = [
+            self._executor.submit(worker.toolkit.unload_all_models)
+            for worker in self.workers
+        ]
+        for future in futures:
+            future.result()
+        logger.info("Unloaded restoration models on %d runtime workers", len(self.workers))
+
+
+def get_runtime_pool(
+    *,
+    worker_devices: list[str],
+    iqa_devices: list[str],
+    models: list[str] | None,
+    preload: bool,
+    auto_unload: bool,
+    use_iqa: bool,
+    normalize_iqa_scores: bool,
+    iqa_stats_path: str | None,
+    iqa_qalign_path: str | None,
+) -> _RestorationRuntimePool:
+    """Lazy load and cache the multi-GPU restoration runtime pool."""
+    global _runtime_pool_instance, _runtime_pool_config_key
+
+    models_key = tuple(models or [])
+    config_key = (
+        tuple(worker_devices),
+        tuple(iqa_devices),
+        models_key,
+        bool(auto_unload),
+        bool(use_iqa),
+        bool(normalize_iqa_scores),
+        iqa_stats_path,
+        iqa_qalign_path,
+    )
+    if _runtime_pool_instance is None or _runtime_pool_config_key != config_key:
+        if _runtime_pool_instance is not None:
+            try:
+                _runtime_pool_instance.unload_all_models()
+            except Exception as e:
+                logger.warning("Failed to unload previous restoration runtime pool: %s", e)
+        _runtime_pool_instance = _RestorationRuntimePool(
+            worker_devices=worker_devices,
+            iqa_devices=iqa_devices,
+            models=models,
+            preload=preload,
+            auto_unload=auto_unload,
+            use_iqa=use_iqa,
+            normalize_iqa_scores=normalize_iqa_scores,
+            iqa_stats_path=iqa_stats_path,
+            iqa_qalign_path=iqa_qalign_path,
+        )
+        _runtime_pool_config_key = config_key
+    return _runtime_pool_instance
+
+
 def _load_restoration_tool_runtime_config(tool_config_path: str) -> dict[str, Any] | None:
     """Load runtime config for RestorationTool from tool_config yaml."""
     try:
@@ -261,6 +441,31 @@ def preload_restoration_models_for_sampling(tool_config_path: str) -> bool:
     # Phase-managed mode: keep models resident during rollout; unload as a batch afterwards.
     device = runtime_cfg.get("device", "cuda")
     models = runtime_cfg.get("models", None)
+    worker_devices = _as_device_list(runtime_cfg.get("worker_devices", None))
+    iqa_devices = _as_device_list(runtime_cfg.get("iqa_devices", None))
+    project_root = Path(__file__).resolve().parent.parent.parent
+    iqa_stats_path = runtime_cfg.get("iqa_stats_path", None)
+    iqa_qalign_path = runtime_cfg.get("iqa_qalign_path", None)
+    if iqa_stats_path and not os.path.isabs(iqa_stats_path):
+        iqa_stats_path = str((project_root / iqa_stats_path).resolve())
+    if iqa_qalign_path and not os.path.isabs(iqa_qalign_path):
+        iqa_qalign_path = str((project_root / iqa_qalign_path).resolve())
+    if worker_devices:
+        pool = get_runtime_pool(
+            worker_devices=worker_devices,
+            iqa_devices=iqa_devices,
+            models=models,
+            preload=False,
+            auto_unload=False,
+            use_iqa=bool(runtime_cfg.get("use_iqa", True)),
+            normalize_iqa_scores=bool(runtime_cfg.get("normalize_iqa_scores", False)),
+            iqa_stats_path=iqa_stats_path,
+            iqa_qalign_path=iqa_qalign_path,
+        )
+        pool.preload_models()
+        logger.info("Preloaded replicated restoration runtime pool for sampling stage")
+        return True
+
     model_devices = runtime_cfg.get("model_devices", None)
     model_device_map = runtime_cfg.get("model_device_map", None)
     toolkit = get_toolkit(
@@ -279,12 +484,17 @@ def preload_restoration_models_for_sampling(tool_config_path: str) -> bool:
 
 def unload_restoration_models_after_sampling() -> bool:
     """Unload all restoration models at sampling stage end."""
-    global _toolkit_instance
-    if _toolkit_instance is None:
-        return False
-    _toolkit_instance.unload_all_models()
-    logger.info("Unloaded all restoration models after sampling stage")
-    return True
+    unloaded = False
+    global _toolkit_instance, _runtime_pool_instance
+    if _toolkit_instance is not None:
+        _toolkit_instance.unload_all_models()
+        logger.info("Unloaded all restoration models after sampling stage")
+        unloaded = True
+    if _runtime_pool_instance is not None:
+        _runtime_pool_instance.unload_all_models()
+        logger.info("Unloaded replicated restoration runtime pool after sampling stage")
+        unloaded = True
+    return unloaded
 
 
 class RestorationTool(BaseTool):
@@ -301,6 +511,9 @@ class RestorationTool(BaseTool):
 
         self.device = config.get("device", "cuda")
         self.iqa_device = config.get("iqa_device", self.device)
+        self.worker_devices = _as_device_list(config.get("worker_devices", None))
+        self.iqa_devices = _as_device_list(config.get("iqa_devices", None))
+        self.use_parallel_workers = bool(self.worker_devices)
         self.preload_models = config.get("models", None)
         self.model_devices = config.get("model_devices", [self.device])
         self.model_device_map = config.get("model_device_map", None)
@@ -370,9 +583,11 @@ class RestorationTool(BaseTool):
         os.makedirs(self.output_dir, exist_ok=True)
         self._toolkit = None
         self._iqa = None
+        self._runtime_pool = None
 
         logger.info(
             f"RestorationTool initialized: device={self.device}, iqa_device={self.iqa_device}, "
+            f"worker_devices={self.worker_devices}, iqa_devices={self.iqa_devices}, "
             f"use_iqa={self.use_iqa}, normalize_iqa_scores={self.normalize_iqa_scores}, "
             f"reward_mode={self.reward_mode}, "
             f"suppress_tool_call_reward={self.suppress_tool_call_reward}, "
@@ -412,6 +627,24 @@ class RestorationTool(BaseTool):
             )
         return self._iqa
 
+    @property
+    def runtime_pool(self):
+        if not self.use_parallel_workers:
+            raise RuntimeError("runtime_pool requested but worker_devices is not configured")
+        if self._runtime_pool is None:
+            self._runtime_pool = get_runtime_pool(
+                worker_devices=self.worker_devices,
+                iqa_devices=self.iqa_devices,
+                models=self.preload_models,
+                preload=self.preload,
+                auto_unload=self.auto_unload,
+                use_iqa=self.use_iqa,
+                normalize_iqa_scores=self.normalize_iqa_scores,
+                iqa_stats_path=self.iqa_stats_path,
+                iqa_qalign_path=self.iqa_qalign_path,
+            )
+        return self._runtime_pool
+
     def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
         return self.tool_schema
 
@@ -425,6 +658,31 @@ class RestorationTool(BaseTool):
         except Exception as e:
             logger.warning(f"IQA scoring failed for {image_path}: {e}")
             return [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def _get_iqa_scores_on_worker(self, worker: _RestorationRuntimeWorker, image_path: str) -> list[float]:
+        """Compute IQA scores using the scorer attached to a runtime worker."""
+        if not self.use_iqa or worker.iqa is None:
+            return [0.0, 0.0, 0.0, 0.0, 0.0]
+        try:
+            scores = worker.iqa.get_iqa_score(image_path)
+            return list(scores)
+        except Exception as e:
+            logger.warning(
+                "IQA scoring failed for %s on worker %s (%s): %s",
+                image_path,
+                worker.index,
+                worker.iqa_device,
+                e,
+            )
+            return [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    async def _aget_iqa_scores(self, image_path: str) -> list[float]:
+        """Async IQA scoring that uses the replicated runtime pool when enabled."""
+        if self.use_parallel_workers:
+            return await self.runtime_pool.run(
+                lambda worker: self._get_iqa_scores_on_worker(worker, image_path)
+            )
+        return self._get_iqa_scores(image_path)
 
     def _count_consecutive_repeats(self, actions_history: list[str], action: str) -> int:
         """Count how many trailing actions match the current action."""
@@ -740,8 +998,10 @@ class RestorationTool(BaseTool):
 
         weights = self.score_weight_map.get(degradation_type, DEFAULT_WEIGHT)
 
-        # Compute identity (original) IQA scores
-        identity_scores = self._get_iqa_scores(original_image) if original_image else [0.0] * 5
+        # Compute identity (original) IQA scores. In replicated mode this is
+        # dispatched to whichever GPU worker is free, so batch create() calls
+        # can score originals in parallel.
+        identity_scores = await self._aget_iqa_scores(original_image) if original_image else [0.0] * 5
 
         self._instance_dict[instance_id] = {
             "original_image": original_image,
@@ -847,12 +1107,40 @@ class RestorationTool(BaseTool):
 
         try:
             logger.info(f"Instance {instance_id}: applying '{action}' to {current_image}")
-            result = self.toolkit.process_image(
-                tools=[action],
-                img_path=current_image,
-                output_dir=output_dir,
-                is_identify=True,
-            )
+            if self.use_parallel_workers:
+                def _restore_and_score(worker: _RestorationRuntimeWorker):
+                    result = worker.toolkit.process_image(
+                        tools=[action],
+                        img_path=current_image,
+                        output_dir=output_dir,
+                        is_identify=True,
+                    )
+                    output_path = result.get("output_path")
+                    if output_path and os.path.exists(output_path):
+                        curr_scores = self._get_iqa_scores_on_worker(worker, output_path)
+                    else:
+                        curr_scores = [0.0] * 5
+                    return result, curr_scores, worker.index, worker.device, worker.iqa_device
+
+                result, curr_scores, worker_index, worker_device, worker_iqa_device = await self.runtime_pool.run(
+                    _restore_and_score
+                )
+                logger.info(
+                    "Instance %s: worker %s completed '%s' (tool=%s, iqa=%s)",
+                    instance_id,
+                    worker_index,
+                    action,
+                    worker_device,
+                    worker_iqa_device,
+                )
+            else:
+                result = self.toolkit.process_image(
+                    tools=[action],
+                    img_path=current_image,
+                    output_dir=output_dir,
+                    is_identify=True,
+                )
+                curr_scores = None
 
             output_path = result.get("output_path")
             if not output_path or not os.path.exists(output_path):
@@ -865,7 +1153,8 @@ class RestorationTool(BaseTool):
                 )
 
             # Compute IQA scores for the new image
-            curr_scores = self._get_iqa_scores(output_path)
+            if curr_scores is None:
+                curr_scores = self._get_iqa_scores(output_path)
             prev_scores = instance["scores_history"][-1]
             identity_scores = instance["identity_scores"]
             weights = instance["weights"]

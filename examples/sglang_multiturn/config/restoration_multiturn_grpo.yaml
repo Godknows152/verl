@@ -27,7 +27,7 @@ data:
   val_files:
     - data/restoration/test.parquet
   val_max_samples: 256
-  train_batch_size: 128
+  train_batch_size: 64
   max_prompt_length: 2048
   max_response_length: 3072
   # Return raw multi-turn chat structure (required by the agent loop)
@@ -77,11 +77,11 @@ actor_rollout_ref:
     n: 3
     # TP=1 gives each rollout shard a full model replica on one GPU and maximizes
     # rollout-side parallelism, but it also increases per-GPU memory pressure.
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 4
     # SGLang uses all 4 GPUs (0-3); restoration/IQA models still share residual VRAM,
     # with GPU 3 typically the tightest due to IQA placement.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.4
+    gpu_memory_utilization: 0.1
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
@@ -102,7 +102,7 @@ actor_rollout_ref:
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
       # 4-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
-      round_barrier_size: 384
+      round_barrier_size: 99999
       # Parse tool calls in hermes format: <tool_call>{...}</tool_call>
       format: hermes
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config.yaml

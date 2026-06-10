@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import threading
 from contextlib import contextmanager
 
 # Setup logger for this module
@@ -17,6 +18,13 @@ _file_handler.setFormatter(
     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 )
 logger.addHandler(_file_handler)
+
+# Several restoration backends import and initialize torch/diffusers/BasicSR
+# modules with process-global state. Loading multiple model replicas from
+# several Python threads can leave modules on the meta device and later fail on
+# .to(cuda). Keep initialization serialized; inference still runs in parallel
+# after each worker has its own loaded model instance.
+_MODEL_LOAD_LOCK = threading.RLock()
 
 @contextmanager
 def suppress_stdout():
@@ -156,60 +164,64 @@ class RestorationToolkit():
         """
         if model_name in self.models:
             return self.models[model_name]
-            
-        try:
-            # Suppress stdout to avoid model initialization prints (e.g., "Block Initial Type: W")
-            target_device = self._resolve_model_device(model_name)
-            with suppress_stdout():
-                if model_name == 'scunet':
-                    from .SCUNet.inference import load_scu_model
-                    self.models['scunet'] = load_scu_model(self.model_paths[model_name], target_device)
-                elif model_name == 'retinexformer_fivek':
-                    from .Retinexformer.inference import load_retinexformer_model
-                    self.models['retinexformer_fivek'] = load_retinexformer_model(
-                        self.model_paths['retinexformer'], target_device
-                    )
-                elif model_name == 'turbo_rain':
-                    from .img2img_turbo.inference import load_turbo_model
-                    self.models['turbo_rain'] = load_turbo_model('rain', self.model_paths['turbo'], target_device)
-                elif model_name == 'turbo_snow':
-                    from .img2img_turbo.inference import load_turbo_model
-                    self.models['turbo_snow'] = load_turbo_model('snow', self.model_paths['turbo'], target_device)
-                elif model_name == 'real_esrgan':
-                    from .ESRGAN.inference import load_esrgan_model
-                    self.models['real_esrgan'] = load_esrgan_model(self.model_paths[model_name], target_device)
-                elif model_name == 'ridcp':
-                    from .RIDCP.inference import load_ridcp_model
-                    self.models['ridcp'] = load_ridcp_model(self.model_paths[model_name], target_device)
-                elif model_name == 'idt':
-                    from .IDT.inference import load_idt_model
-                    self.models['idt'] = load_idt_model('day', self.model_paths['idt'], target_device)
-                elif model_name == 'lightdiff':
-                    from .LightenDiffusion.inference import load_lightdiff_model
-                    self.models['lightdiff'] = load_lightdiff_model(self.model_paths[model_name], target_device)
-                elif model_name == 'snowmaster':
-                    from .SnowMaster.inference import load_snowmaster_model
-                    self.models['snowmaster'] = load_snowmaster_model(self.model_paths[model_name], target_device)
-                elif model_name == 's2former':
-                    from .S2Former.inference import load_s2former_model
-                    self.models['s2former'] = load_s2former_model(self.model_paths[model_name], target_device)
-                elif model_name == 'kanet':
-                    from .KANet.inference import load_kanet_model
-                    self.models['kanet'] = load_kanet_model(self.model_paths[model_name], target_device)
-                elif model_name == 'hvicidnet':
-                    from .HVICIDNet.inference import load_hvicidnet_model
-                    self.models['hvicidnet'] = load_hvicidnet_model(self.model_paths[model_name], target_device)
-                else:
-                    logger.warning(f"Unknown model: {model_name}")
-                    return None
 
-            self.model_loaded_devices[model_name] = target_device
-            
-            logger.debug(f"Loaded model: {model_name} on {target_device}")
-            return self.models.get(model_name)
-        except Exception as e:
-            logger.error(f"Error loading model {model_name}: {e}")
-            return None
+        with _MODEL_LOAD_LOCK:
+            if model_name in self.models:
+                return self.models[model_name]
+
+            try:
+                # Suppress stdout to avoid model initialization prints (e.g., "Block Initial Type: W")
+                target_device = self._resolve_model_device(model_name)
+                with suppress_stdout():
+                    if model_name == 'scunet':
+                        from .SCUNet.inference import load_scu_model
+                        self.models['scunet'] = load_scu_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'retinexformer_fivek':
+                        from .Retinexformer.inference import load_retinexformer_model
+                        self.models['retinexformer_fivek'] = load_retinexformer_model(
+                            self.model_paths['retinexformer'], target_device
+                        )
+                    elif model_name == 'turbo_rain':
+                        from .img2img_turbo.inference import load_turbo_model
+                        self.models['turbo_rain'] = load_turbo_model('rain', self.model_paths['turbo'], target_device)
+                    elif model_name == 'turbo_snow':
+                        from .img2img_turbo.inference import load_turbo_model
+                        self.models['turbo_snow'] = load_turbo_model('snow', self.model_paths['turbo'], target_device)
+                    elif model_name == 'real_esrgan':
+                        from .ESRGAN.inference import load_esrgan_model
+                        self.models['real_esrgan'] = load_esrgan_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'ridcp':
+                        from .RIDCP.inference import load_ridcp_model
+                        self.models['ridcp'] = load_ridcp_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'idt':
+                        from .IDT.inference import load_idt_model
+                        self.models['idt'] = load_idt_model('day', self.model_paths['idt'], target_device)
+                    elif model_name == 'lightdiff':
+                        from .LightenDiffusion.inference import load_lightdiff_model
+                        self.models['lightdiff'] = load_lightdiff_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'snowmaster':
+                        from .SnowMaster.inference import load_snowmaster_model
+                        self.models['snowmaster'] = load_snowmaster_model(self.model_paths[model_name], target_device)
+                    elif model_name == 's2former':
+                        from .S2Former.inference import load_s2former_model
+                        self.models['s2former'] = load_s2former_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'kanet':
+                        from .KANet.inference import load_kanet_model
+                        self.models['kanet'] = load_kanet_model(self.model_paths[model_name], target_device)
+                    elif model_name == 'hvicidnet':
+                        from .HVICIDNet.inference import load_hvicidnet_model
+                        self.models['hvicidnet'] = load_hvicidnet_model(self.model_paths[model_name], target_device)
+                    else:
+                        logger.warning(f"Unknown model: {model_name}")
+                        return None
+
+                self.model_loaded_devices[model_name] = target_device
+
+                logger.debug(f"Loaded model: {model_name} on {target_device}")
+                return self.models.get(model_name)
+            except Exception as e:
+                logger.error(f"Error loading model {model_name}: {e}")
+                return None
     
     def unload_single_model(self, model_name):
         """

@@ -68,6 +68,13 @@ mkdir -p /home/LXJ/tmp/verl_restoration
 # ---------------------------------------------------------------------------
 export PYTHONUNBUFFERED=1
 export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+# All restoration checkpoints used by this experiment are expected to be
+# available locally. Avoid runtime Hugging Face HEAD/download attempts inside
+# tool workers, which can leave diffusers models half-initialized on meta tensors
+# when the network is unstable.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export DIFFUSERS_OFFLINE=1
 
 # 显式使用 verl conda 环境的 Python，避免调用到系统 python3
 PYTHON_BIN=/home/LXJ/anaconda3/envs/verl/bin/python
