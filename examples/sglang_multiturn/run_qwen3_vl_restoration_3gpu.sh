@@ -3,9 +3,11 @@
 #
 # 与 run_qwen3_vl_restoration.sh 的区别：
 #   - 使用 restoration_multiturn_grpo_3gpu.yaml（3 卡配置）
-#   - 模型路径指向 step120 合并后的 HF 模型（checkpoints/merged/step120）
-#   - resume_mode=disable，从 step120 全新开始，不续训旧 VERL checkpoint
+#   - 模型路径指向 Step102 合并后的 HF 模型（checkpoints/merged/Train4/Step102）
+#   - resume_mode=disable，从 Step102 全新开始，不续训旧 VERL checkpoint
 #   - tool config 中 auto_unload=false（显存充足，无需每次采样后自卸载）
+#   - GPU 0-2: SGLang rollout + 全部图像修复模型 (replica) + IQA (replica)
+#   - 对称池模式：每张卡都有完整的修复模型和 IQA，与 4 卡相同的复制模式
 #
 # 使用方式：
 #   从项目根目录执行：

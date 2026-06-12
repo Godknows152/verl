@@ -3,8 +3,9 @@
 #
 # 与 run_qwen3_vl_restoration.sh 的区别：
 #   - 使用 restoration_multiturn_grpo_2gpu.yaml（2 卡配置）
-#   - GPU 0: SGLang rollout + 所有图像修复模型
-#   - GPU 1: SGLang rollout + IQA 模型
+#   - GPU 0: SGLang rollout + 全部图像修复模型 (replica 0) + IQA (replica 0)
+#   - GPU 1: SGLang rollout + 全部图像修复模型 (replica 1) + IQA (replica 1)
+#   - 对称池模式：每张卡都有完整的修复模型和 IQA，与 4 卡相同的复制模式
 #   - checkpoint 保存在 checkpoints/verl/multiturn_grpo_2gpu/
 #
 # 使用方式：

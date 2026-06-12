@@ -4,8 +4,7 @@
 #   - 训练超参与 2-GPU 配置保持一致
 #   - trainer.default_local_dir: 3-GPU checkpoint 目录，避免与其他 ckpt 混用
 #   - trainer.n_gpus_per_node: 4 → 3
-#   - rollout.multi_turn.tool_config_path: 指向 3-GPU 专用 tool config
-#   - tool config 中 iqa_device: cuda:3 → cuda:2
+#   - rollout.multi_turn.tool_config_path: 指向 3-GPU 专用 tool config（对称池模式）
 #
 # Usage:
 #   cd /home/LXJ/Python_Projects/verl
@@ -28,7 +27,7 @@ data:
   val_files:
     - data/restoration/test.parquet
   val_max_samples: 256
-  train_batch_size: 6
+  train_batch_size: 32
   max_prompt_length: 2048
   max_response_length: 3072
   return_raw_chat: true
@@ -47,7 +46,7 @@ algorithm:
 # ---------------------------------------------------------------------------
 actor_rollout_ref:
   model:
-    path: /home/LXJ/Python_Projects/LLaMA_Factory/LlamaFactory/saves/sft_0430merge
+    path: checkpoints/merged/Train4/Step102
 
   actor:
     optim:
@@ -60,7 +59,7 @@ actor_rollout_ref:
       model_dtype: bfloat16
       param_offload: true
       optimizer_offload: true
-    ppo_mini_batch_size: 6
+    ppo_mini_batch_size: 8
     ppo_micro_batch_size_per_gpu: 2
 
   rollout:
@@ -71,16 +70,16 @@ actor_rollout_ref:
     # GRPO requires n > 1 to compute group-relative advantages
     n: 3
     tensor_model_parallel_size: 1
-    # SGLang uses 3 GPUs (0-2); restoration/IQA models share residual VRAM,
-    # with GPU 2 typically the tightest due to IQA placement.
+    # SGLang uses 3 GPUs (0-2); all three GPUs additionally host full restoration
+    # model replicas + IQA in symmetric pool mode.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
-    gpu_memory_utilization: 0.4
+    gpu_memory_utilization: 0.3
     log_prob_micro_batch_size_per_gpu: 2
 
     agent:
       # Keep at 1 to avoid OOM — each worker loads multiple restoration models (~13 GB)
       num_workers: 1
-      # No dedicated GPU requested from Ray; restoration/IQA models share GPU 2's remaining VRAM
+      # No dedicated GPU requested from Ray; restoration/IQA models share residual VRAM on each GPU
       num_gpus_per_worker: 0.0
       default_agent_loop: tool_agent
 
@@ -94,10 +93,10 @@ actor_rollout_ref:
       # batch requests efficiently and eliminates the cascading stagger effect
       # that causes poor GPU utilization in later rounds.
       # Set to 0 to disable, or a positive integer to enable (auto = batch size).
-      # 3-GPU: train_batch_size=6 × n=3 = 18 trajectories per batch
+      # 3-GPU: train_batch_size=32 × n=3 = 96 trajectories per batch
       round_barrier_size: 0
       format: hermes
-      # 使用 3-GPU 专用 tool config（iqa_device=cuda:2）
+      # 使用 3-GPU 专用 tool config（对称池模式：每卡完整复制修复模型+IQA）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_3gpu.yaml
 
   ref:
@@ -112,17 +111,16 @@ trainer:
     - swanlab
   project_name: verl
   experiment_name: qwen3vl_restoration_grpo_3gpu
-  # resume_mode: disable
-  resume_mode: resume_path
-  resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05130010/global_step_36
+  resume_mode: disable
+  # resume_mode: resume_path
+  # resume_from_path: checkpoints/verl/multiturn_grpo_3gpu/05130010/global_step_36
   default_local_dir: checkpoints/verl/multiturn_grpo_3gpu
   log_val_generations: 5
-  # 使用 3 张 GPU (0-2)；IQA 固定在 GPU 2，GPU 2 是显存最紧张的卡
-  # (num_gpus_per_worker: 0.0 — AgentLoopWorker 直接访问 GPU 2，不通过 Ray 申请)
+  # 使用 3 张 GPU (0-2)；对称池模式，每卡承载 SGLang + 完整修复模型 + IQA
   n_gpus_per_node: 3
   nnodes: 1
-  save_freq: 20
-  test_freq: 20
+  save_freq: 10
+  test_freq: 10
   total_epochs: 3
   max_actor_ckpt_to_keep: 10
   val_before_train: false

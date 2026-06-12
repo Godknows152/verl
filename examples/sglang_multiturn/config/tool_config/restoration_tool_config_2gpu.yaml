@@ -1,19 +1,15 @@
 # Image Restoration Tool Configuration — 2-GPU variant
 #
-# 与 restoration_tool_config_3gpu.yaml 的区别：
-#   model_devices: [cuda:0, cuda:1] → [cuda:0]（修复模型全部集中在 GPU 0）
-#   iqa_device: cuda:2 → cuda:1（IQA 模型独占 GPU 1）
-#
-# GPU 分配说明（2 卡版本）：
-#   GPU 0: SGLang rollout + 所有图像修复模型
-#   GPU 1: SGLang rollout + IQA 模型
-#   => GPU 0 承载 SGLang + 修复模型，GPU 1 承载 SGLang + IQA
-#
-# GPU memory management strategy:
-#   To avoid conflicts with SGLang's memory_saver (which can cause
-#   resume_memory_occupation timeouts), dynamic model loading is used:
+# GPU runtime strategy (symmetric pool mode):
+#   Each GPU hosts SGLang + a full replica of all restoration models + IQA.
+#   - worker_devices: one full RestorationToolkit replica per GPU
+#   - iqa_devices: one IQA replica per GPU, matched by worker index
 #   - preload=false: models are loaded on demand instead of at startup
 #   - auto_unload=false: models stay in memory across steps to avoid reload overhead
+#   => GPU 0: SGLang rollout + full restoration models + IQA
+#   => GPU 1: SGLang rollout + full restoration models + IQA
+#
+# This is the same symmetric pool pattern used by the 4-GPU config.
 #
 # Usage:
 #   actor_rollout_ref:
@@ -25,19 +21,23 @@ tools:
   - class_name: "verl.tools.restoration_tool.RestorationTool"
     config:
       type: native
-      # Base device fallback. Actual restoration models are all on GPU 0.
+      # Base device fallback. Actual restoration models are replicated on each GPU.
       device: cuda:0
-      # All restoration models on GPU 0 only.
-      # GPU 1 is reserved exclusively for IQA to avoid memory contention.
-      model_devices: [cuda:0]
+      # Replicate a complete restoration toolkit on every GPU so concurrent
+      # batch tool calls can be dispatched to independent workers.
+      worker_devices: [cuda:0, cuda:1]
+      # Legacy fallback used only when worker_devices is not configured.
+      model_devices: [cuda:0, cuda:1]
       # Directory for intermediate output images
       output_dir: /home/LXJ/tmp/verl_restoration
       # Load restoration models on demand; keep loaded models resident afterwards.
       preload: false
       auto_unload: false
-      # IQA reward computation settings: pin IQA to GPU 1.
-      # GPU 1 is reserved for IQA, keeping it separate from restoration models.
+      # IQA reward computation settings: replicate IQA on every worker GPU so
+      # scoring runs in parallel with restoration requests.
       use_iqa: true
+      iqa_devices: [cuda:0, cuda:1]
+      # Legacy fallback used only when iqa_devices is not configured.
       iqa_device: cuda:1
       # Compute frozen local dataset stats first:
       # python scripts/compute_iqa_stats.py --parquet data/restoration/train.parquet

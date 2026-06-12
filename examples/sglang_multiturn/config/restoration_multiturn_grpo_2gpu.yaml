@@ -6,11 +6,12 @@
 #   - data.train_batch_size: 16 → 8（随 GPU 数量等比缩减）
 #   - actor.ppo_mini_batch_size: 8 → 4
 #   - rollout.multi_turn.tool_config_path: 指向 2-GPU 专用 tool config
-#     （修复模型全部在 cuda:0，IQA 独占 cuda:1）
+#     （对称池模式：每卡完整复制修复模型+IQA，与 4 卡相同）
 #
-# GPU 分配说明（2 卡版本）：
-#   GPU 0: SGLang rollout (TP=1) + 所有图像修复模型
-#   GPU 1: SGLang rollout (TP=1) + IQA 模型
+# GPU 分配说明（2 卡版本 — 对称池模式）：
+#   GPU 0: SGLang rollout (TP=1) + 全部图像修复模型 (replica 0) + IQA (replica 0)
+#   GPU 1: SGLang rollout (TP=1) + 全部图像修复模型 (replica 1) + IQA (replica 1)
+#   => 每张卡都有完整的修复模型和 IQA，与 4 卡相同的对称复制模式
 #
 # Usage:
 #   cd /home/LXJ/Python_Projects/verl
@@ -76,8 +77,8 @@ actor_rollout_ref:
     # GRPO requires n > 1 to compute group-relative advantages
     n: 3
     tensor_model_parallel_size: 1
-    # SGLang uses 2 GPUs (0-1); GPU 0 additionally hosts restoration models,
-    # GPU 1 additionally hosts IQA models.
+    # SGLang uses 2 GPUs (0-1); both GPUs additionally host full restoration
+    # model replicas + IQA in symmetric pool mode.
     # (AgentLoopWorker does not request a dedicated GPU from Ray)
     gpu_memory_utilization: 0.4
     log_prob_micro_batch_size_per_gpu: 2
@@ -102,7 +103,7 @@ actor_rollout_ref:
       # 2-GPU: train_batch_size=8 × n=3 = 24 trajectories per batch
       round_barrier_size: 0
       format: hermes
-      # 使用 2-GPU 专用 tool config（修复模型在 cuda:0，IQA 在 cuda:1）
+      # 使用 2-GPU 专用 tool config（对称池模式：每卡完整复制修复模型+IQA）
       tool_config_path: examples/sglang_multiturn/config/tool_config/restoration_tool_config_2gpu.yaml
 
   ref:
@@ -122,7 +123,7 @@ trainer:
   # resume_mode: disable
   default_local_dir: checkpoints/verl/multiturn_grpo_2gpu
   log_val_generations: 5
-  # 使用 2 张 GPU (0-1)；GPU 0 承载修复模型，GPU 1 承载 IQA 模型
+  # 使用 2 张 GPU (0-1)；对称池模式，每卡承载 SGLang + 完整修复模型 + IQA
   n_gpus_per_node: 2
   nnodes: 1
   save_freq: 20
